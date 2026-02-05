@@ -1,0 +1,252 @@
+mod common;
+mod disc;
+mod std_fs;
+
+use std::{
+    error::Error,
+    fmt::{Debug, Display, Formatter},
+    io,
+    io::{BufRead, Read, Seek, SeekFrom},
+    sync::Arc,
+};
+
+use anyhow::{anyhow, Context};
+use common::StaticFile;
+use disc::{nod_to_io_error, DiscFs};
+use dyn_clone::DynClone;
+use filetime::FileTime;
+use nodtool::{nod, nod::DiscStream};
+pub use std_fs::StdFs;
+use typed_path::{Utf8NativePath, Utf8UnixPath};
+
+pub trait Vfs: DynClone + Send + Sync {
+    fn open(&mut self, path: &Utf8UnixPath) -> VfsResult<Box<dyn VfsFile>>;
+
+    fn exists(&mut self, path: &Utf8UnixPath) -> VfsResult<bool>;
+
+    fn read_dir(&mut self, path: &Utf8UnixPath) -> VfsResult<Vec<String>>;
+
+    fn metadata(&mut self, path: &Utf8UnixPath) -> VfsResult<VfsMetadata>;
+}
+
+dyn_clone::clone_trait_object!(Vfs);
+
+pub trait VfsFile: DiscStream + BufRead {
+    fn map(&mut self) -> io::Result<&[u8]>;
+
+    fn metadata(&mut self) -> io::Result<VfsMetadata>;
+
+    fn into_disc_stream(self: Box<Self>) -> Box<dyn DiscStream>;
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum VfsFileType {
+    File,
+    Directory,
+}
+
+pub struct VfsMetadata {
+    pub file_type: VfsFileType,
+    pub len: u64,
+    pub mtime: Option<FileTime>,
+}
+
+impl VfsMetadata {
+    pub fn is_file(&self) -> bool { self.file_type == VfsFileType::File }
+
+    pub fn is_dir(&self) -> bool { self.file_type == VfsFileType::Directory }
+}
+
+dyn_clone::clone_trait_object!(VfsFile);
+
+#[derive(Debug)]
+pub enum VfsError {
+    NotFound,
+    NotADirectory,
+    IsADirectory,
+    IoError(io::Error),
+    Other(String),
+}
+
+pub type VfsResult<T, E = VfsError> = Result<T, E>;
+
+impl From<io::Error> for VfsError {
+    fn from(e: io::Error) -> Self {
+        match e.kind() {
+            io::ErrorKind::NotFound => VfsError::NotFound,
+            // TODO: stabilized in Rust 1.83
+            // io::ErrorKind::NotADirectory => VfsError::NotADirectory,
+            // io::ErrorKind::IsADirectory => VfsError::IsADirectory,
+            _ => VfsError::IoError(e),
+        }
+    }
+}
+
+impl From<String> for VfsError {
+    fn from(e: String) -> Self { VfsError::Other(e) }
+}
+
+impl From<&str> for VfsError {
+    fn from(e: &str) -> Self { VfsError::Other(e.to_string()) }
+}
+
+impl Display for VfsError {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        match self {
+            VfsError::NotFound => write!(f, "File or directory not found"),
+            VfsError::IoError(e) => write!(f, "{e}"),
+            VfsError::Other(e) => write!(f, "{e}"),
+            VfsError::NotADirectory => write!(f, "Path is a file, not a directory"),
+            VfsError::IsADirectory => write!(f, "Path is a directory, not a file"),
+        }
+    }
+}
+
+impl Error for VfsError {}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum FileFormat {
+    Regular,
+    Archive(ArchiveKind),
+}
+
+impl Display for FileFormat {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        match self {
+            FileFormat::Regular => write!(f, "File"),
+            FileFormat::Archive(kind) => write!(f, "Archive: {kind}"),
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum ArchiveKind {
+    Disc(nod::Format),
+}
+
+impl Display for ArchiveKind {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        match self {
+            ArchiveKind::Disc(format) => write!(f, "Disc ({format})"),
+        }
+    }
+}
+
+pub fn detect<R>(file: &mut R) -> io::Result<FileFormat>
+where R: Read + Seek + ?Sized {
+    file.seek(SeekFrom::Start(0))?;
+    let mut magic = [0u8; 8];
+    match file.read_exact(&mut magic) {
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(FileFormat::Regular),
+        Err(e) => return Err(e),
+    }
+    file.seek_relative(-8)?;
+    {
+        let format = nod::Disc::detect(file)?;
+        file.seek(SeekFrom::Start(0))?;
+        match format {
+            Some(format) => Ok(FileFormat::Archive(ArchiveKind::Disc(format))),
+            None => Ok(FileFormat::Regular),
+        }
+    }
+}
+
+pub enum OpenResult {
+    File(Box<dyn VfsFile>),
+    Directory,
+}
+
+pub fn open_path_with_fs(
+    mut fs: Box<dyn Vfs>,
+    path: &Utf8NativePath,
+) -> anyhow::Result<OpenResult> {
+    let path = path.with_unix_encoding();
+    let mut split = path.as_str().split(':').peekable();
+    let mut current_path = String::new();
+    let mut file: Option<Box<dyn VfsFile>> = None;
+    loop {
+        // Open the next segment if necessary
+        if file.is_none() {
+            let segment = Utf8UnixPath::new(split.next().unwrap());
+            if !current_path.is_empty() {
+                current_path.push(':');
+            }
+            current_path.push_str(segment.as_str());
+            let file_type = match fs.metadata(segment) {
+                Ok(metadata) => metadata.file_type,
+                Err(VfsError::NotFound) => return Err(anyhow!("{} not found", current_path)),
+                Err(e) => return Err(e).context(format!("Failed to open {current_path}")),
+            };
+            match file_type {
+                VfsFileType::File => {
+                    file = Some(
+                        fs.open(segment)
+                            .with_context(|| format!("Failed to open {current_path}"))?,
+                    );
+                }
+                VfsFileType::Directory => {
+                    return if split.peek().is_some() {
+                        Err(anyhow!("{} is not a file", current_path))
+                    } else {
+                        Ok(OpenResult::Directory)
+                    }
+                }
+            }
+        }
+        let mut current_file = file.take().unwrap();
+        let format = detect(current_file.as_mut())
+            .with_context(|| format!("Failed to detect file type for {current_path}"))?;
+        if let Some(&_next) = split.peek() {
+            match format {
+                FileFormat::Regular => return Err(anyhow!("{} is not an archive", current_path)),
+                FileFormat::Archive(kind) => {
+                    fs = open_fs(current_file, kind)
+                        .with_context(|| format!("Failed to open container {current_path}"))?;
+                    // Continue the loop to open the next segment
+                }
+            }
+        } else {
+            // No more segments, return as-is
+            return Ok(OpenResult::File(current_file));
+        }
+    }
+}
+
+pub fn open_file(path: &Utf8NativePath) -> anyhow::Result<Box<dyn VfsFile>> {
+    open_file_with_fs(Box::new(StdFs), path)
+}
+
+pub fn open_file_with_fs(
+    fs: Box<dyn Vfs>,
+    path: &Utf8NativePath,
+) -> anyhow::Result<Box<dyn VfsFile>> {
+    match open_path_with_fs(fs, path)? {
+        OpenResult::File(file) => Ok(file),
+        OpenResult::Directory => Err(VfsError::IsADirectory.into()),
+    }
+}
+
+pub fn open_fs(mut file: Box<dyn VfsFile>, kind: ArchiveKind) -> io::Result<Box<dyn Vfs>> {
+    let metadata = file.metadata()?;
+    match kind {
+        ArchiveKind::Disc(_) => {
+            let disc =
+                Arc::new(nod::Disc::new_stream(file.into_disc_stream()).map_err(nod_to_io_error)?);
+            let partition =
+                disc.open_partition_kind(nod::PartitionKind::Data).map_err(nod_to_io_error)?;
+            Ok(Box::new(DiscFs::new(disc, partition, metadata.mtime)?))
+        }
+    }
+}
+
+#[inline]
+pub fn next_non_empty<'a>(iter: &mut impl Iterator<Item = &'a str>) -> &'a str {
+    loop {
+        match iter.next() {
+            Some("") => continue,
+            Some(next) => break next,
+            None => break "",
+        }
+    }
+}
