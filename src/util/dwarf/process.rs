@@ -521,6 +521,9 @@ fn process_array_tag(
 ) -> Result<ArrayType> {
     ensure!(tag.kind == TagKind::ArrayType, "{:?} is not an ArrayType tag", tag.kind);
 
+    let new_array_id = unit.add(unit.root(), gimli::DW_TAG_array_type);
+    dwarf2_types.old_new_tag_map.insert(tag.key, new_array_id);
+
     // TODO DWARF122 remove these, as it has to be done in the fixup stage
     let mut subscr_data = None;
     for attr in &tag.attributes {
@@ -551,9 +554,6 @@ fn process_array_tag(
     if let Some(child) = tag.children(&info.tags).first() {
         bail!("Unhandled ArrayType child {:?}", child.kind);
     }
-
-    let new_array_id = unit.add(unit.root(), gimli::DW_TAG_array_type);
-    dwarf2_types.old_new_tag_map.insert(tag.key, new_array_id);
 
     let (element_type, dimensions) =
         subscr_data.ok_or_else(|| anyhow!("ArrayType without SubscrData: {:?}", tag))?;
@@ -1786,9 +1786,11 @@ fn process_typedef_tag(
 ) -> Result<()> {
     ensure!(tag.kind == TagKind::Typedef, "{:?} is not a typedef tag", tag.kind);
 
-    let new_typedef_id = unit.add(parent, gimli::DW_TAG_typedef);
-    dwarf2_types.old_new_tag_map.insert(tag.key, new_typedef_id);
-    let new_typedef_tag = unit.get_mut(new_typedef_id);
+    // Create it only if it doesn't exist (because of specification tags)
+    let new_typedef_id = *dwarf2_types
+        .old_new_tag_map
+        .entry(tag.key)
+        .or_insert_with(|| unit.add(parent, gimli::DW_TAG_typedef));
 
     let mut name = None;
     for attr in &tag.attributes {
@@ -1805,7 +1807,9 @@ fn process_typedef_tag(
             (AttributeKind::Member, _) => {
                 // can be ignored for now
             }
-            (AttributeKind::Specification, &AttributeValue::Reference(_key)) => {}
+            (AttributeKind::Specification, &AttributeValue::Reference(_key)) => {
+                // TODO DWARF122 figure out how to do this
+            }
             _ => {
                 bail!("Unhandled Typedef attribute {:?}", attr);
             }
@@ -1818,7 +1822,7 @@ fn process_typedef_tag(
 
     let name = name.ok_or_else(|| anyhow!("Typedef without Name: {:?}", tag))?;
 
-    new_typedef_tag
+    unit.get_mut(new_typedef_id)
         .set(gimli::DW_AT_name, gimli::write::AttributeValue::String(name.clone().into_bytes()));
 
     Ok(())
@@ -1846,6 +1850,7 @@ fn ref_fixup_typedef_tag(
                 kind = Some(process_type(unit, dwarf2_types, attr, info.e)?);
             }
             (AttributeKind::Specification, &AttributeValue::Reference(key)) => {
+                // TODO DWARF122 figure out how to do this
                 let spec_tag = info
                     .tags
                     .get(&key)
