@@ -505,7 +505,6 @@ fn ref_fixup_structure_tag(
             }
             TagKind::GlobalVariable => {
                 // TODO handle visibility
-                // TODO DWARF122
                 ref_fixup_variable_tag(info, unit, dwarf2_types, child)?;
             }
             TagKind::StructureType | TagKind::ClassType => {
@@ -986,7 +985,6 @@ fn process_subroutine_tag(
     }
 
     let mut labels = Vec::new();
-    let mut blocks_and_inlines = Vec::new();
     let mut inner_types = Vec::new();
     let mut typedefs = Vec::new();
     for child in tag.children(&info.tags) {
@@ -1009,15 +1007,7 @@ fn process_subroutine_tag(
             }
             TagKind::Label => labels.push(process_subroutine_label_tag(info, child)?),
             TagKind::LexicalBlock => {
-                if let Some(block) = process_subroutine_block_tag(
-                    info,
-                    unit,
-                    new_subroutine_id,
-                    dwarf2_types,
-                    child,
-                )? {
-                    blocks_and_inlines.push(SubroutineNode::Block(block));
-                }
+                process_subroutine_block_tag(info, unit, new_subroutine_id, dwarf2_types, child)?;
             }
             TagKind::InlinedSubroutine => {
                 process_subroutine_tag(info, unit, new_subroutine_id, dwarf2_types, child)?;
@@ -1063,9 +1053,6 @@ fn process_subroutine_tag(
         }
     }
 
-    // TODO DWARF122
-    // let return_type = return_type
-    //     .unwrap_or_else(|| Type { kind: TypeKind::Fundamental(FundType::Void), modifiers: vec![] });
     let direct_member_of = direct_base_key;
     let local = tag.kind == TagKind::Subroutine;
 
@@ -1248,11 +1235,7 @@ fn ref_fixup_subroutine_tag(
                 // ref_fixup_subroutine_label_tag(info, child)?;
             }
             TagKind::LexicalBlock => {
-                if let Some(block) =
-                    process_subroutine_block_tag(info, unit, unit.root(), dwarf2_types, child)?
-                {
-                    blocks_and_inlines.push(SubroutineNode::Block(block));
-                }
+                ref_fixup_subroutine_block_tag(info, unit, dwarf2_types, child)?;
             }
             TagKind::InlinedSubroutine => blocks_and_inlines.push(SubroutineNode::Inline(
                 ref_fixup_subroutine_tag(info, unit, dwarf2_types, child)?,
@@ -1341,8 +1324,11 @@ fn process_subroutine_block_tag(
     parent: gimli::write::UnitEntryId,
     dwarf2_types: &mut Dwarf2Types,
     tag: &Tag,
-) -> Result<Option<SubroutineBlock>> {
+) -> Result<()> {
     ensure!(tag.kind == TagKind::LexicalBlock, "{:?} is not a LexicalBlock tag", tag.kind);
+
+    let new_block_id = unit.add(parent, gimli::DW_TAG_lexical_block);
+    dwarf2_types.old_new_tag_map.insert(tag.key, new_block_id);
 
     let mut name = None;
     let mut start_address = None;
@@ -1357,69 +1343,94 @@ fn process_subroutine_block_tag(
         }
     }
 
-    let mut variables = Vec::new();
-    let mut blocks_and_inlines = Vec::new();
-    let mut inner_types = Vec::new();
     for child in tag.children(&info.tags) {
         match child.kind {
             TagKind::LocalVariable => {
-                // TODO DWARF12
-                // variables.push(process_local_variable_tag(info, unit, dwarf2_types, child)?)
+                process_local_variable_tag(info, unit, new_block_id, dwarf2_types, child)?;
             }
             TagKind::GlobalVariable => {
                 // TODO GlobalVariable refs?
             }
             TagKind::LexicalBlock => {
-                if let Some(block) =
-                    process_subroutine_block_tag(info, unit, unit.root(), dwarf2_types, child)?
-                {
-                    // TOO DWARF122 parent
-                    blocks_and_inlines.push(SubroutineNode::Block(block));
-                }
+                process_subroutine_block_tag(info, unit, new_block_id, dwarf2_types, child)?;
             }
             TagKind::InlinedSubroutine => {
-                // TODO DWARF122
-                // blocks_and_inlines.push(SubroutineNode::Inline(process_subroutine_tag(
-                //     info,
-                //     unit,
-                //     unit.root(), // TODO DWARF122 pass the block_id here
-                //     dwarf2_types,
-                //     child,
-                // )?));
+                process_subroutine_tag(info, unit, new_block_id, dwarf2_types, child)?;
             }
             TagKind::StructureType | TagKind::ClassType => {
-                inner_types.push(UserDefinedType::Structure(process_structure_tag(
-                    info,
-                    unit,
-                    unit.root(),
-                    true,
-                    dwarf2_types,
-                    child,
-                )?))
-            } // TOO DWARF122 parent
+                process_structure_tag(info, unit, new_block_id, true, dwarf2_types, child)?;
+            }
             TagKind::EnumerationType => {
-                // TODO pass correct parent
-                inner_types.push(UserDefinedType::Enumeration(process_enumeration_tag(
-                    info,
-                    unit,
-                    unit.root(),
-                    dwarf2_types,
-                    child,
-                )?));
+                process_enumeration_tag(info, unit, new_block_id, dwarf2_types, child)?;
             }
             TagKind::UnionType => {
-                // TODO DWARF122 pass parent
-                inner_types.push(UserDefinedType::Union(process_union_tag(
-                    info,
-                    unit,
-                    unit.root(),
-                    dwarf2_types,
-                    child,
-                )?))
+                process_union_tag(info, unit, new_block_id, dwarf2_types, child)?;
+            }
+            TagKind::Typedef => process_typedef_tag(info, unit, new_block_id, dwarf2_types, child)?,
+            TagKind::ArrayType | TagKind::SubroutineType | TagKind::PtrToMemberType => {
+                // Variable type, ignore
+            }
+            kind => bail!("Unhandled LexicalBlock child {:?}", kind),
+        }
+    }
+
+    let new_block_tag = unit.get_mut(new_block_id);
+
+    if let Some(ref name) = name {
+        new_block_tag
+            .set(gimli::DW_AT_name, gimli::write::AttributeValue::String(name.as_bytes().to_vec()));
+    }
+    if let Some(start_address) = start_address {
+        new_block_tag.set(
+            gimli::DW_AT_low_pc,
+            gimli::write::AttributeValue::Address(gimli::write::Address::Constant(
+                start_address as u64,
+            )),
+        );
+    }
+    if let Some(end_address) = end_address {
+        new_block_tag.set(
+            gimli::DW_AT_high_pc,
+            gimli::write::AttributeValue::Address(gimli::write::Address::Constant(
+                end_address as u64,
+            )),
+        );
+    }
+
+    Ok(())
+}
+
+fn ref_fixup_subroutine_block_tag(
+    info: &DwarfInfo,
+    unit: &mut gimli::write::Unit,
+    dwarf2_types: &mut Dwarf2Types,
+    tag: &Tag,
+) -> Result<()> {
+    ensure!(tag.kind == TagKind::LexicalBlock, "{:?} is not a LexicalBlock tag", tag.kind);
+
+    for child in tag.children(&info.tags) {
+        match child.kind {
+            TagKind::LocalVariable => {
+                ref_fixup_local_variable_tag(info, unit, dwarf2_types, child)?;
+            }
+            TagKind::GlobalVariable => {
+                // TODO GlobalVariable refs?
+            }
+            TagKind::LexicalBlock => {
+                ref_fixup_subroutine_block_tag(info, unit, dwarf2_types, child)?;
+            }
+            TagKind::InlinedSubroutine => {
+                ref_fixup_subroutine_tag(info, unit, dwarf2_types, child)?;
+            }
+            TagKind::StructureType | TagKind::ClassType => {
+                ref_fixup_structure_tag(info, unit, dwarf2_types, child)?;
+            }
+            TagKind::EnumerationType => {}
+            TagKind::UnionType => {
+                ref_fixup_union_tag(info, unit, dwarf2_types, child)?;
             }
             TagKind::Typedef => {
-                // TODO DWARF122 pass parent
-                process_typedef_tag(info, unit, unit.root(), dwarf2_types, child)?
+                ref_fixup_typedef_tag(info, unit, dwarf2_types, child)?;
             }
             TagKind::ArrayType | TagKind::SubroutineType | TagKind::PtrToMemberType => {
                 // Variable type, ignore
@@ -1428,14 +1439,7 @@ fn process_subroutine_block_tag(
         }
     }
 
-    Ok(Some(SubroutineBlock {
-        name,
-        start_address,
-        end_address,
-        variables,
-        blocks_and_inlines,
-        inner_types,
-    }))
+    Ok(())
 }
 
 fn process_subroutine_parameter_tag(
@@ -2050,7 +2054,7 @@ pub fn ref_fixup_cu_tag(
     tag: &Tag,
 ) -> Result<()> {
     match tag.kind {
-        // TODO DWARF122 subroutine, ptrtomember
+        // TODO DWARF122 ptrtomember
         TagKind::SubroutineType | TagKind::GlobalSubroutine | TagKind::Subroutine => {
             ref_fixup_subroutine_tag(info, unit, dwarf2_types, tag).map(|_tag| ())
         }
@@ -2125,7 +2129,6 @@ fn process_typedef_tag(
     Ok(())
 }
 
-// TODO DWARF122 call this in the fixup of subroutines and blocks
 fn ref_fixup_typedef_tag(
     info: &DwarfInfo,
     unit: &mut gimli::write::Unit,

@@ -231,7 +231,7 @@ where
                     // }
 
                     let mut write_dwarf = gimli::write::DwarfUnit::new(encoding);
-                    // TODO DWAARF122 move to dwarf2_types?
+                    // TODO DWARF122 move to dwarf2_types?
                     let write_unit = write_dwarf.unit.get_mut(write_dwarf.unit.root());
 
                     write_unit.set(
