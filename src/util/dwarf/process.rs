@@ -1966,67 +1966,50 @@ fn ref_fixup_variable_tag(
     Ok(())
 }
 
+const FUNDAMENTALS: [FundType; 18] = [
+    FundType::Char,
+    FundType::SignedChar,
+    FundType::UnsignedChar,
+    FundType::Short,
+    FundType::SignedShort,
+    FundType::UnsignedShort,
+    FundType::Integer,
+    FundType::SignedInteger,
+    FundType::UnsignedInteger,
+    FundType::Long,
+    FundType::SignedLong,
+    FundType::UnsignedLong,
+    FundType::LongLong,
+    FundType::SignedLongLong,
+    FundType::UnsignedLongLong,
+    FundType::Boolean,
+    FundType::Float,
+    FundType::DblPrecFloat,
+];
+
 pub fn build_fundemantal_typemap(
     unit: &mut gimli::write::Unit,
-) -> BTreeMap<FundType, gimli::write::UnitEntryId> {
+) -> Result<BTreeMap<FundType, gimli::write::UnitEntryId>> {
     let mut fund_map: BTreeMap<FundType, gimli::write::UnitEntryId> = BTreeMap::new();
-    let char = create_fundamental_type(unit, "char", 1, gimli::DW_ATE_signed_char);
-    fund_map.insert(FundType::Char, char);
-    fund_map.insert(FundType::SignedChar, char);
-    fund_map.insert(
-        FundType::UnsignedChar,
-        create_fundamental_type(unit, "unsigned char", 1, gimli::DW_ATE_unsigned_char),
-    );
+    for fund_type in FUNDAMENTALS {
+        fund_map.insert(
+            fund_type,
+            create_fundamental_type(
+                unit,
+                fund_type.name()?,
+                fund_type.size()?,
+                fund_type.gimli_ate()?,
+            ),
+        );
+    }
 
-    let short = create_fundamental_type(unit, "short", 2, gimli::DW_ATE_signed);
-    fund_map.insert(FundType::Short, short);
-    fund_map.insert(FundType::SignedShort, short);
-    fund_map.insert(
-        FundType::UnsignedShort,
-        create_fundamental_type(unit, "unsigned short", 2, gimli::DW_ATE_unsigned),
-    );
-
-    let int = create_fundamental_type(unit, "int", 4, gimli::DW_ATE_signed);
-    fund_map.insert(FundType::Integer, int);
-    fund_map.insert(FundType::SignedInteger, int);
-    fund_map.insert(
-        FundType::UnsignedInteger,
-        create_fundamental_type(unit, "unsigned int", 4, gimli::DW_ATE_unsigned),
-    );
-
-    let long = create_fundamental_type(unit, "long", 4, gimli::DW_ATE_signed);
-    fund_map.insert(FundType::Long, long);
-    fund_map.insert(FundType::SignedLong, long);
-    fund_map.insert(
-        FundType::UnsignedLong,
-        create_fundamental_type(unit, "unsigned long", 4, gimli::DW_ATE_unsigned),
-    );
-
-    let longlong = create_fundamental_type(unit, "long long", 8, gimli::DW_ATE_signed);
-    fund_map.insert(FundType::LongLong, longlong);
-    fund_map.insert(FundType::SignedLongLong, longlong);
-    fund_map.insert(
-        FundType::UnsignedLongLong,
-        create_fundamental_type(unit, "unsigned long long", 8, gimli::DW_ATE_unsigned),
-    );
-
-    // TODO DWARF122 size? maybe passed as a CLI argument?
-    fund_map
-        .insert(FundType::Boolean, create_fundamental_type(unit, "bool", 1, gimli::DW_ATE_boolean));
-    fund_map
-        .insert(FundType::Float, create_fundamental_type(unit, "float", 4, gimli::DW_ATE_float));
-    fund_map.insert(
-        FundType::DblPrecFloat,
-        create_fundamental_type(unit, "double", 8, gimli::DW_ATE_float),
-    );
-
-    fund_map
+    Ok(fund_map)
 }
 
 fn create_fundamental_type(
     unit: &mut gimli::write::Unit,
     name: &str,
-    size: u8,
+    size: u32,
     encoding: gimli::DwAte,
 ) -> gimli::write::UnitEntryId {
     let fund_type = unit.add(unit.root(), gimli::DW_TAG_base_type);

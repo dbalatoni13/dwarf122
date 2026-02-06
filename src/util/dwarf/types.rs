@@ -149,6 +149,39 @@ impl FundType {
         })
     }
 
+    pub fn gimli_ate(self) -> Result<gimli::DwAte> {
+        Ok(match self {
+            FundType::WideChar => bail!("Unhandled fundamental type {self:?}"),
+            FundType::Char => gimli::DW_ATE_signed_char,
+            FundType::SignedChar => gimli::DW_ATE_signed_char,
+            FundType::UnsignedChar => gimli::DW_ATE_unsigned_char,
+            FundType::Short => gimli::DW_ATE_signed,
+            FundType::SignedShort => gimli::DW_ATE_signed,
+            FundType::UnsignedShort => gimli::DW_ATE_unsigned,
+            FundType::Integer => gimli::DW_ATE_signed,
+            FundType::SignedInteger => gimli::DW_ATE_signed,
+            FundType::UnsignedInteger => gimli::DW_ATE_signed,
+            FundType::Long => gimli::DW_ATE_signed,
+            FundType::SignedLong => gimli::DW_ATE_signed,
+            FundType::UnsignedLong => gimli::DW_ATE_unsigned,
+            FundType::Pointer => bail!("Unhandled fundamental type {self:?}"),
+            FundType::Float => gimli::DW_ATE_float,
+            FundType::DblPrecFloat => gimli::DW_ATE_float,
+            FundType::ExtPrecFloat => gimli::DW_ATE_float,
+            FundType::Void => bail!("Unhandled fundamental type {self:?}"),
+            FundType::Boolean => gimli::DW_ATE_boolean,
+            FundType::Complex
+            | FundType::DblPrecComplex
+            | FundType::ExtPrecComplex
+            | FundType::Label => bail!("Unhandled fundamental type {self:?}"),
+            FundType::LongLong => gimli::DW_ATE_signed,
+            FundType::SignedLongLong => gimli::DW_ATE_signed,
+            FundType::UnsignedLongLong => gimli::DW_ATE_unsigned,
+            FundType::Int128 => gimli::DW_ATE_signed,
+            FundType::Vec2x32Float => bail!("Unhandled fundamental type {self:?}"),
+        })
+    }
+
     pub fn parse_int(value: u16) -> Result<Self, TryFromPrimitiveError<Self>> {
         if value >> 8 == 0x1 {
             // Can appear in erased tags

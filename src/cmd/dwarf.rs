@@ -284,7 +284,7 @@ where
 
                     let mut typedefs = TypedefMap::new();
                     let mut dwarf2_types = Dwarf2Types {
-                        fundamental_map: build_fundemantal_typemap(&mut write_dwarf.unit),
+                        fundamental_map: build_fundemantal_typemap(&mut write_dwarf.unit)?,
                         old_new_tag_map: BTreeMap::new(),
                         modified_type_id_map: HashMap::new(),
                     };
