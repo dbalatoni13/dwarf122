@@ -1398,6 +1398,7 @@ fn process_local_variable_tag(
     Ok(SubroutineVariable { name, mangled_name, kind, location })
 }
 
+// TODO DWARF122
 fn process_ptr_to_member_tag(
     info: &DwarfInfo,
     unit: &mut gimli::write::Unit,
@@ -1501,7 +1502,6 @@ pub fn process_type(
     e: Endian,
 ) -> Result<Type> {
     match (attr.kind, &attr.value) {
-        // TODO DWARF122 restructure this function so it just returns an UnitEntryId instead of a Type object
         (AttributeKind::FundType, &AttributeValue::Data2(type_id)) => {
             let fund_type = FundType::parse_int(type_id)
                 .with_context(|| format!("Invalid fundamental type ID '{type_id:04X}'"))?;
@@ -1535,7 +1535,7 @@ pub fn process_type(
                 .old_new_tag_map
                 .get(&key)
                 .cloned()
-                .ok_or_else(|| anyhow!("Unknown user type 1"))?;
+                .ok_or_else(|| anyhow!("Unknown user type"))?;
             Ok(Type { kind: TypeKind::UserDefined(key), modifiers: vec![], entry_id })
         }
         (AttributeKind::ModUDType, AttributeValue::Block(ops)) => {
@@ -1545,7 +1545,7 @@ pub fn process_type(
                 .old_new_tag_map
                 .get(&ud_ref)
                 .cloned()
-                .ok_or_else(|| anyhow!("Unknown user type 1"))?;
+                .ok_or_else(|| anyhow!("Unknown user type"))?;
             let modified_type_id =
                 create_or_get_modified_type(unit, dwarf2_types, entry_id, &modifiers)?;
             Ok(Type { kind: TypeKind::UserDefined(ud_ref), modifiers, entry_id: modified_type_id })
@@ -1746,25 +1746,19 @@ pub fn ref_fixup_cu_tag(
     unit: &mut gimli::write::Unit,
     dwarf2_types: &mut Dwarf2Types,
     tag: &Tag,
-) {
+) -> Result<()> {
     match tag.kind {
-        // TODO DWARF122 union, subroutine, ptrtomember, typedef
-        TagKind::ArrayType => {
-            let _ = ref_fixup_array_tag(info, unit, dwarf2_types, tag);
-        }
-        TagKind::Typedef => {
-            let _ = ref_fixup_typedef_tag(info, unit, dwarf2_types, tag);
-        }
-        TagKind::UnionType => {
-            let _ = ref_fixup_union_tag(info, unit, dwarf2_types, tag);
-        }
+        // TODO DWARF122 subroutine, ptrtomember
+        TagKind::ArrayType => ref_fixup_array_tag(info, unit, dwarf2_types, tag),
+        TagKind::Typedef => ref_fixup_typedef_tag(info, unit, dwarf2_types, tag),
+        TagKind::UnionType => ref_fixup_union_tag(info, unit, dwarf2_types, tag),
         TagKind::GlobalVariable | TagKind::LocalVariable => {
-            let _ = ref_fixup_variable_tag(info, unit, dwarf2_types, tag);
+            ref_fixup_variable_tag(info, unit, dwarf2_types, tag)
         }
         TagKind::ClassType | TagKind::StructureType => {
-            let _ = ref_fixup_structure_tag(info, unit, dwarf2_types, tag);
+            ref_fixup_structure_tag(info, unit, dwarf2_types, tag)
         }
-        _ => {}
+        _ => Ok(()),
     }
 }
 
@@ -1998,7 +1992,7 @@ fn ref_fixup_variable_tag(
     Ok(())
 }
 
-const FUNDAMENTALS: [FundType; 18] = [
+const FUNDAMENTALS: [FundType; 19] = [
     FundType::Char,
     FundType::SignedChar,
     FundType::UnsignedChar,
@@ -2017,6 +2011,7 @@ const FUNDAMENTALS: [FundType; 18] = [
     FundType::Boolean,
     FundType::Float,
     FundType::DblPrecFloat,
+    FundType::Void,
 ];
 
 pub fn build_fundemantal_typemap(
@@ -2036,6 +2031,17 @@ pub fn build_fundemantal_typemap(
     }
 
     Ok(fund_map)
+}
+
+pub fn create_void_pointer(unit: &mut gimli::write::Unit, dwarf2_types: &mut Dwarf2Types) {
+    let void_id = dwarf2_types.fundamental_map.get(&FundType::Void).cloned().unwrap(); // shouldn't fail
+
+    let void_pointer_id = unit.add(unit.root(), gimli::DW_TAG_pointer_type);
+    // TODO unhardcode size?
+    // void* doesn't point to anything in DWARF 2+
+    unit.get_mut(void_pointer_id).set(gimli::DW_AT_byte_size, unsigned_dwarf_value(4 as u8));
+
+    dwarf2_types.modified_type_id_map.insert((void_id, vec![Modifier::PointerTo]), void_pointer_id);
 }
 
 fn create_fundamental_type(

@@ -168,7 +168,7 @@ impl FundType {
             FundType::Float => gimli::DW_ATE_float,
             FundType::DblPrecFloat => gimli::DW_ATE_float,
             FundType::ExtPrecFloat => gimli::DW_ATE_float,
-            FundType::Void => bail!("Unhandled fundamental type {self:?}"),
+            FundType::Void => gimli::DW_ATE_address,
             FundType::Boolean => gimli::DW_ATE_boolean,
             FundType::Complex
             | FundType::DblPrecComplex

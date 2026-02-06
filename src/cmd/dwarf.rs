@@ -1,7 +1,7 @@
 use std::{
-    collections::{BTreeMap, HashMap, btree_map},
+    collections::{btree_map, BTreeMap, HashMap},
     fs::{self},
-    io::{Cursor, Read, Write, stdout},
+    io::{stdout, Cursor, Read, Write},
     ops::Bound::{Excluded, Unbounded},
     str::from_utf8,
 };
@@ -20,7 +20,16 @@ use typed_path::Utf8NativePathBuf;
 
 use crate::{
     util::{
-        dwarf::{io::{parse_producer, read_debug_section}, process::{build_fundemantal_typemap, process_compile_unit, process_cu_tag, process_overlay_branch, ref_fixup_cu_tag, should_skip_tag}, types::{AttributeKind, Dwarf2Types, TagKind, TypedefMap}}, file::buf_writer, path::native_path
+        dwarf::{
+            io::{parse_producer, read_debug_section},
+            process::{
+                build_fundemantal_typemap, create_void_pointer, process_compile_unit,
+                process_cu_tag, process_overlay_branch, ref_fixup_cu_tag, should_skip_tag,
+            },
+            types::{AttributeKind, Dwarf2Types, TagKind, TypedefMap},
+        },
+        file::buf_writer,
+        path::native_path,
     },
     vfs::open_file,
 };
@@ -288,6 +297,7 @@ where
                         old_new_tag_map: BTreeMap::new(),
                         modified_type_id_map: HashMap::new(),
                     };
+                    create_void_pointer(&mut write_dwarf.unit, &mut dwarf2_types);
                     for &child in &children {
                         let tag_type = match process_cu_tag(
                             &info,
@@ -333,8 +343,24 @@ where
                         }
                     }
                     for &child in &children {
-                        ref_fixup_cu_tag(&info, &mut write_dwarf.unit, &mut dwarf2_types, child);
+                        if let Err(e) =
+                            ref_fixup_cu_tag(&info, &mut write_dwarf.unit, &mut dwarf2_types, child)
+                        {
+                            log::error!(
+                                "Failed to process tag {:X} (unit {}): {}",
+                                child.key,
+                                read_unit.name,
+                                e
+                            );
+                            writeln!(
+                                w,
+                                "// ERROR: Failed to process tag {:X} ({:?})",
+                                child.key, child.kind
+                            )?;
+                            continue;
+                        }
                     }
+                    // TODO DWARF122 remove the fake void type?
                     write_units.add(write_dwarf.unit);
                 }
                 kind => bail!("Unhandled root tag type {:?}", kind),
