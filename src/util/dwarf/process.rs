@@ -1812,7 +1812,7 @@ pub fn process_type(
                 .old_new_tag_map
                 .get(&key)
                 .cloned()
-                .ok_or_else(|| anyhow!("Unknown user type."))?;
+                .ok_or_else(|| anyhow!("Unknown user type {:X}", key))?;
             Ok(Type { kind: TypeKind::UserDefined(key), modifiers: vec![], entry_id })
         }
         (AttributeKind::ModUDType, AttributeValue::Block(ops)) => {
@@ -1822,7 +1822,7 @@ pub fn process_type(
                 .old_new_tag_map
                 .get(&ud_ref)
                 .cloned()
-                .ok_or_else(|| anyhow!("Unknown user type.."))?;
+                .ok_or_else(|| anyhow!("Unknown user type {:X}", ud_ref))?;
             let modified_type_id =
                 create_or_get_modified_type(unit, dwarf2_types, entry_id, &modifiers)?;
             Ok(Type { kind: TypeKind::UserDefined(ud_ref), modifiers, entry_id: modified_type_id })
@@ -2092,10 +2092,12 @@ fn process_typedef_tag(
         bail!("Unhandled Typedef child {:?}", child.kind);
     }
 
-    let name = name.ok_or_else(|| anyhow!("Typedef without Name: {:?}", tag))?;
-
-    unit.get_mut(new_typedef_id)
-        .set(gimli::DW_AT_name, gimli::write::AttributeValue::String(name.clone().into_bytes()));
+    if let Some(name) = name {
+        unit.get_mut(new_typedef_id).set(
+            gimli::DW_AT_name,
+            gimli::write::AttributeValue::String(name.clone().into_bytes()),
+        );
+    }
 
     Ok(())
 }
