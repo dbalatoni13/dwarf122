@@ -414,8 +414,12 @@ fn process_structure_tag(
             TagKind::UnionType => {
                 process_union_tag(info, unit, new_struct_id, dwarf2_types, child)?;
             }
-            TagKind::ArrayType | TagKind::SubroutineType | TagKind::PtrToMemberType => {
-                // Variable type, ignore
+            TagKind::ArrayType => process_array_tag(info, unit, dwarf2_types, child)?,
+            TagKind::SubroutineType => {
+                process_subroutine_tag(info, unit, new_struct_id, dwarf2_types, child)?
+            }
+            TagKind::PtrToMemberType => {
+                // TODO DWARF122
             }
             kind => bail!("Unhandled StructureType child {:?}", kind),
         }
@@ -468,8 +472,10 @@ fn ref_fixup_structure_tag(
             }
             TagKind::EnumerationType => {}
             TagKind::UnionType => ref_fixup_union_tag(info, unit, dwarf2_types, child)?,
-            TagKind::ArrayType | TagKind::SubroutineType | TagKind::PtrToMemberType => {
-                // Variable type, ignore
+            TagKind::ArrayType => ref_fixup_array_tag(info, unit, dwarf2_types, child)?,
+            TagKind::SubroutineType => ref_fixup_subroutine_tag(info, unit, dwarf2_types, child)?,
+            TagKind::PtrToMemberType => {
+                // TODO DWARF122
             }
             kind => bail!("Unhandled StructureType child {:?}", kind),
         }
@@ -778,25 +784,31 @@ fn process_union_tag(
         }
     }
 
-    let mut members = Vec::new();
     for child in tag.children(&info.tags) {
         match child.kind {
-            TagKind::Member => members.push(process_structure_member_tag(
-                info,
-                unit,
-                new_union_id,
-                dwarf2_types,
-                child,
-            )?),
-            TagKind::StructureType
-            | TagKind::ArrayType
-            | TagKind::EnumerationType
-            | TagKind::UnionType
-            | TagKind::ClassType
-            | TagKind::SubroutineType
-            | TagKind::PtrToMemberType
-            | TagKind::Typedef => {
-                // Variable type, ignore
+            TagKind::Member => {
+                process_structure_member_tag(info, unit, new_union_id, dwarf2_types, child)?;
+            }
+            TagKind::ClassType | TagKind::StructureType => {
+                process_structure_tag(info, unit, new_union_id, false, dwarf2_types, child)?;
+            }
+            TagKind::ArrayType => {
+                process_array_tag(info, unit, dwarf2_types, child)?;
+            }
+            TagKind::EnumerationType => {
+                process_enumeration_tag(info, unit, new_union_id, dwarf2_types, child)?;
+            }
+            TagKind::UnionType => {
+                process_union_tag(info, unit, new_union_id, dwarf2_types, child)?;
+            }
+            TagKind::SubroutineType => {
+                process_subroutine_tag(info, unit, new_union_id, dwarf2_types, child)?;
+            }
+            TagKind::Typedef => {
+                process_typedef_tag(info, unit, new_union_id, dwarf2_types, child)?;
+            }
+            TagKind::PtrToMemberType => {
+                // TODO DWARF122
             }
             kind => bail!("Unhandled UnionType child {:?}", kind),
         }
@@ -825,8 +837,28 @@ fn ref_fixup_union_tag(
     ensure!(tag.kind == TagKind::UnionType, "{:?} is not a UnionType tag", tag.kind);
 
     for child in tag.children(&info.tags) {
-        if matches!(child.kind, TagKind::Member) {
-            ref_fixup_structure_member_tag(info, unit, dwarf2_types, child)?
+        match child.kind {
+            TagKind::Member => ref_fixup_structure_member_tag(info, unit, dwarf2_types, child)?,
+            TagKind::ClassType | TagKind::StructureType => {
+                ref_fixup_structure_tag(info, unit, dwarf2_types, child)?;
+            }
+            TagKind::ArrayType => {
+                ref_fixup_array_tag(info, unit, dwarf2_types, child)?;
+            }
+            TagKind::EnumerationType => {}
+            TagKind::UnionType => {
+                ref_fixup_union_tag(info, unit, dwarf2_types, child)?;
+            }
+            TagKind::SubroutineType => {
+                ref_fixup_subroutine_tag(info, unit, dwarf2_types, child)?;
+            }
+            TagKind::Typedef => {
+                ref_fixup_typedef_tag(info, unit, dwarf2_types, child)?;
+            }
+            TagKind::PtrToMemberType => {
+                // TODO DWARF122
+            }
+            _ => {}
         }
     }
 
@@ -939,7 +971,6 @@ fn process_subroutine_tag(
     }
 
     let mut labels = Vec::new();
-    let mut typedefs = Vec::new();
     for child in tag.children(&info.tags) {
         match child.kind {
             TagKind::FormalParameter => {
@@ -956,7 +987,7 @@ fn process_subroutine_tag(
                 process_local_variable_tag(info, unit, new_subroutine_id, dwarf2_types, child)?;
             }
             TagKind::GlobalVariable => {
-                // TODO GlobalVariable refs?
+                process_variable_tag(info, unit, new_subroutine_id, dwarf2_types, child)?
             }
             TagKind::Label => labels.push(process_subroutine_label_tag(info, child)?),
             TagKind::LexicalBlock => {
@@ -974,13 +1005,9 @@ fn process_subroutine_tag(
             TagKind::UnionType => {
                 process_union_tag(info, unit, new_subroutine_id, dwarf2_types, child)?;
             }
-            TagKind::Typedef => typedefs.push(process_typedef_tag(
-                info,
-                unit,
-                new_subroutine_id,
-                dwarf2_types,
-                child,
-            )?),
+            TagKind::Typedef => {
+                process_typedef_tag(info, unit, new_subroutine_id, dwarf2_types, child)?
+            }
             TagKind::ArrayType => {
                 process_array_tag(info, unit, dwarf2_types, child)?;
             }
@@ -1148,7 +1175,7 @@ fn ref_fixup_subroutine_tag(
                 ref_fixup_local_variable_tag(info, unit, dwarf2_types, child)?;
             }
             TagKind::GlobalVariable => {
-                // TODO GlobalVariable refs?
+                ref_fixup_variable_tag(info, unit, dwarf2_types, child)?;
             }
             TagKind::Label => {
                 // TODO DWARF122 is this needed?
@@ -1257,7 +1284,7 @@ fn process_subroutine_block_tag(
                 process_local_variable_tag(info, unit, new_block_id, dwarf2_types, child)?;
             }
             TagKind::GlobalVariable => {
-                // TODO GlobalVariable refs?
+                process_variable_tag(info, unit, new_block_id, dwarf2_types, child)?
             }
             TagKind::LexicalBlock => {
                 process_subroutine_block_tag(info, unit, new_block_id, dwarf2_types, child)?;
@@ -1275,8 +1302,12 @@ fn process_subroutine_block_tag(
                 process_union_tag(info, unit, new_block_id, dwarf2_types, child)?;
             }
             TagKind::Typedef => process_typedef_tag(info, unit, new_block_id, dwarf2_types, child)?,
-            TagKind::ArrayType | TagKind::SubroutineType | TagKind::PtrToMemberType => {
-                // Variable type, ignore
+            TagKind::ArrayType => process_array_tag(info, unit, dwarf2_types, child)?,
+            TagKind::SubroutineType => {
+                process_subroutine_tag(info, unit, new_block_id, dwarf2_types, child)?
+            }
+            TagKind::PtrToMemberType => {
+                // TODO
             }
             kind => bail!("Unhandled LexicalBlock child {:?}", kind),
         }
@@ -1321,9 +1352,7 @@ fn ref_fixup_subroutine_block_tag(
             TagKind::LocalVariable => {
                 ref_fixup_local_variable_tag(info, unit, dwarf2_types, child)?;
             }
-            TagKind::GlobalVariable => {
-                // TODO GlobalVariable refs?
-            }
+            TagKind::GlobalVariable => ref_fixup_variable_tag(info, unit, dwarf2_types, child)?,
             TagKind::LexicalBlock => {
                 ref_fixup_subroutine_block_tag(info, unit, dwarf2_types, child)?;
             }
@@ -1340,7 +1369,9 @@ fn ref_fixup_subroutine_block_tag(
             TagKind::Typedef => {
                 ref_fixup_typedef_tag(info, unit, dwarf2_types, child)?;
             }
-            TagKind::ArrayType | TagKind::SubroutineType | TagKind::PtrToMemberType => {
+            TagKind::ArrayType => ref_fixup_array_tag(info, unit, dwarf2_types, child)?,
+            TagKind::SubroutineType => ref_fixup_subroutine_tag(info, unit, dwarf2_types, child)?,
+            TagKind::PtrToMemberType => {
                 // Variable type, ignore
             }
             kind => bail!("Unhandled LexicalBlock child {:?}", kind),
