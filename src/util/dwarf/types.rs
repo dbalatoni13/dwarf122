@@ -13,8 +13,6 @@ use crate::{
     util::reader::{Endian, FromBytes, FromReader},
 };
 
-
-
 #[derive(Debug, Eq, PartialEq, Copy, Clone, IntoPrimitive, TryFromPrimitive)]
 #[repr(u16)]
 pub enum TagKind {
@@ -776,10 +774,10 @@ impl UserDefinedType {
         }
     }
 
-    pub fn size(&self, info: &DwarfInfo) -> Result<u32> {
+    pub fn size(&self) -> Result<u32> {
         Ok(match self {
             UserDefinedType::Array(t) => {
-                let mut size = t.element_type.size(info)?;
+                let mut size = t.element_type.size()?;
                 for dim in &t.dimensions {
                     size *= dim.size.map(|u| u.get()).unwrap_or_default();
                 }
@@ -822,7 +820,7 @@ pub struct Type {
 }
 
 impl Type {
-    pub fn size(&self, info: &DwarfInfo) -> Result<u32> {
+    pub fn size(&self) -> Result<u32> {
         if self.modifiers.iter().any(|m| {
             matches!(m, Modifier::MwPointerTo | Modifier::PointerTo | Modifier::ReferenceTo)
         }) {
@@ -833,25 +831,4 @@ impl Type {
             TypeKind::UserDefined(key) => Ok(4), // TODO remove this
         }
     }
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct TypeString {
-    pub prefix: String,
-    pub suffix: String,
-    // TODO: rework this eventually and merge with PTMF handling
-    pub member: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct AnonUnion {
-    pub offset: u32,
-    pub member_index: usize,
-    pub member_count: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct AnonUnionGroup {
-    pub member_index: usize,
-    pub member_count: usize,
 }

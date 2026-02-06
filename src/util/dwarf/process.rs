@@ -14,114 +14,18 @@ use crate::{
         dwarf::{
             io::{read_attribute, read_string},
             types::{
-                AnonUnion, AnonUnionGroup, ArrayDimension, ArrayOrdering, ArrayType, Attribute,
-                AttributeKind, AttributeValue, BitData, CompileUnit, Dwarf2Types, DwarfInfo,
-                EnumerationMember, EnumerationType, FundType, Language, LocationOp, Modifier,
-                OverlayBranch, Producer, PtrToMemberType, StructureBase, StructureKind,
-                StructureMember, StructureType, SubroutineBlock, SubroutineLabel, SubroutineNode,
-                SubroutineParameter, SubroutineType, SubroutineVariable, SubscriptFormat, Tag,
-                TagKind, TagType, Type, TypeKind, TypedefTag, UnionType, UserDefinedType,
-                VariableTag, Visibility,
+                ArrayDimension, ArrayOrdering, ArrayType, Attribute, AttributeKind, AttributeValue,
+                BitData, CompileUnit, Dwarf2Types, DwarfInfo, EnumerationMember, EnumerationType,
+                FundType, Language, LocationOp, Modifier, OverlayBranch, Producer, PtrToMemberType,
+                StructureBase, StructureKind, StructureMember, StructureType, SubroutineBlock,
+                SubroutineLabel, SubroutineNode, SubroutineParameter, SubroutineType,
+                SubroutineVariable, SubscriptFormat, Tag, TagKind, TagType, Type, TypeKind,
+                TypedefTag, UnionType, UserDefinedType, VariableTag, Visibility,
             },
         },
         reader::{Endian, FromBytes, FromReader},
     },
 };
-
-// fn get_anon_unions(info: &DwarfInfo, members: &[StructureMember]) -> Result<Vec<AnonUnion>> {
-//     let mut unions = Vec::<AnonUnion>::new();
-//     let mut offset = u32::MAX;
-//     'member: for (prev, member) in members.iter().skip(1).enumerate() {
-//         if let Some(bit) = &member.bit {
-//             if bit.bit_offset != 0 {
-//                 continue;
-//             }
-//         }
-//         if member.offset <= members[prev].offset && member.offset != offset {
-//             offset = member.offset;
-//             for (i, member) in members.iter().enumerate() {
-//                 if member.offset == offset {
-//                     for anon in &unions {
-//                         if anon.member_index == i {
-//                             continue 'member;
-//                         }
-//                     }
-//                     unions.push(AnonUnion { offset, member_index: i, member_count: 0 });
-//                     break;
-//                 }
-//             }
-//         }
-//     }
-//     for anon in &mut unions {
-//         for (i, member) in members.iter().skip(anon.member_index).enumerate() {
-//             if let Some(bit) = &member.bit {
-//                 if bit.bit_offset != 0 {
-//                     continue;
-//                 }
-//             }
-//             if member.offset == anon.offset {
-//                 anon.member_count = i;
-//             }
-//         }
-//         let mut max_offset = 0;
-//         for member in members.iter().skip(anon.member_index).take(anon.member_count + 1) {
-//             if let Some(bit) = &member.bit {
-//                 if bit.bit_offset != 0 {
-//                     continue;
-//                 }
-//             }
-//             let size =
-//                 if let Some(size) = member.byte_size { size } else { member.kind.size(info)? };
-//             max_offset = max(max_offset, member.offset + size);
-//         }
-//         for member in members.iter().skip(anon.member_index + anon.member_count) {
-//             if let Some(bit) = &member.bit {
-//                 if bit.bit_offset != 0 {
-//                     continue;
-//                 }
-//             }
-//             if member.offset >= max_offset || member.offset < anon.offset {
-//                 break;
-//             }
-//             anon.member_count += 1;
-//         }
-//     }
-//     Ok(unions)
-// }
-
-fn get_anon_union_groups(members: &[StructureMember], unions: &[AnonUnion]) -> Vec<AnonUnionGroup> {
-    let mut groups = Vec::new();
-    for anon in unions {
-        for (i, member) in
-            members.iter().skip(anon.member_index).take(anon.member_count).enumerate()
-        {
-            if let Some(bit) = &member.bit {
-                if bit.bit_offset != 0 {
-                    continue;
-                }
-            }
-            if member.offset == anon.offset {
-                let mut group =
-                    AnonUnionGroup { member_index: anon.member_index + i, member_count: 1 };
-
-                for member in
-                    members.iter().skip(anon.member_index).take(anon.member_count).skip(i + 1)
-                {
-                    if member.offset == anon.offset {
-                        break;
-                    }
-
-                    group.member_count += 1;
-                }
-
-                if group.member_count > 1 {
-                    groups.push(group);
-                }
-            }
-        }
-    }
-    groups
-}
 
 pub fn process_offset(block: &[u8], e: Endian) -> Result<u32> {
     if block.len() == 6 && block[0] == LocationOp::Const as u8 && block[5] == LocationOp::Add as u8
@@ -538,9 +442,13 @@ fn process_structure_tag(
             TagKind::EnumerationType => inner_types.push(UserDefinedType::Enumeration(
                 process_enumeration_tag(info, unit, new_struct_id, dwarf2_types, child)?,
             )),
-            TagKind::UnionType => {
-                inner_types.push(UserDefinedType::Union(process_union_tag(info, child)?))
-            }
+            TagKind::UnionType => inner_types.push(UserDefinedType::Union(process_union_tag(
+                info,
+                unit,
+                new_struct_id,
+                dwarf2_types,
+                child,
+            )?)),
             TagKind::ArrayType | TagKind::SubroutineType | TagKind::PtrToMemberType => {
                 // Variable type, ignore
             }
@@ -569,42 +477,12 @@ fn ref_fixup_structure_tag(
     unit: &mut gimli::write::Unit,
     dwarf2_types: &mut Dwarf2Types,
     tag: &Tag,
-) -> Result<StructureType> {
+) -> Result<()> {
     ensure!(
         matches!(tag.kind, TagKind::StructureType | TagKind::ClassType),
         "{:?} is not a Structure type tag",
         tag.kind
     );
-
-    let mut name = None;
-    let mut byte_size = None;
-    for attr in &tag.attributes {
-        match (attr.kind, &attr.value) {
-            (AttributeKind::Sibling, _) => {}
-            (AttributeKind::Name, AttributeValue::String(s)) => {
-                name = Some(s.clone());
-            }
-            (AttributeKind::ByteSize, &AttributeValue::Data4(value)) => {
-                byte_size = Some(value);
-            }
-            (AttributeKind::Member, &AttributeValue::Reference(_key)) => {}
-            _ => {
-                bail!("Unhandled structure attribute {:?}", attr);
-            }
-        }
-    }
-
-    let mut members = Vec::new();
-    let mut static_members = Vec::new();
-    let mut bases = Vec::new();
-    let mut inner_types = Vec::new();
-    let mut typedefs = Vec::new();
-
-    let new_struct_id = dwarf2_types
-        .old_new_tag_map
-        .get(&tag.key)
-        .cloned()
-        .ok_or_else(|| anyhow!("Unknown struct"))?;
 
     for child in tag.children(&info.tags) {
         match child.kind {
@@ -647,38 +525,17 @@ fn ref_fixup_structure_tag(
                 ref_fixup_variable_tag(info, unit, dwarf2_types, child)?;
             }
             TagKind::StructureType | TagKind::ClassType => {
-                inner_types.push(UserDefinedType::Structure(ref_fixup_structure_tag(
-                    info,
-                    unit,
-                    dwarf2_types,
-                    child,
-                )?))
+                ref_fixup_structure_tag(info, unit, dwarf2_types, child)?;
             }
             TagKind::EnumerationType => {}
-            TagKind::UnionType => {
-                // TODO DWARF122
-                // inner_types.push(UserDefinedType::Union(process_union_tag(info, child)?))
-            }
+            TagKind::UnionType => ref_fixup_union_tag(info, unit, dwarf2_types, child)?,
             TagKind::ArrayType | TagKind::SubroutineType | TagKind::PtrToMemberType => {
                 // Variable type, ignore
             }
             kind => bail!("Unhandled StructureType child {:?}", kind),
         }
     }
-    Ok(StructureType {
-        kind: if tag.kind == TagKind::ClassType {
-            StructureKind::Class
-        } else {
-            StructureKind::Struct
-        },
-        name,
-        byte_size,
-        members,
-        static_members,
-        bases,
-        inner_types,
-        typedefs,
-    })
+    Ok(())
 }
 
 fn process_array_tag(
@@ -864,6 +721,10 @@ fn process_enumeration_tag(
 ) -> Result<EnumerationType> {
     ensure!(tag.kind == TagKind::EnumerationType, "{:?} is not an EnumerationType tag", tag.kind);
 
+    let new_enum_id = unit.add(parent, gimli::DW_TAG_enumeration_type);
+    dwarf2_types.old_new_tag_map.insert(tag.key, new_enum_id);
+    let new_enum_tag = unit.get_mut(new_enum_id);
+
     let mut name = None;
     let mut byte_size = None;
     let mut members = Vec::new();
@@ -907,10 +768,6 @@ fn process_enumeration_tag(
         // for some reason enum members are reversed in GCC
         members.reverse();
     }
-
-    let new_enum_id = unit.add(parent, gimli::DW_TAG_enumeration_type);
-    dwarf2_types.old_new_tag_map.insert(tag.key, new_enum_id);
-    let new_enum_tag = unit.get_mut(new_enum_id);
 
     if let Some(ref name) = name {
         new_enum_tag.set(
@@ -956,8 +813,17 @@ fn process_enumeration_tag(
     Ok(EnumerationType { name, byte_size, members })
 }
 
-fn process_union_tag(info: &DwarfInfo, tag: &Tag) -> Result<UnionType> {
+fn process_union_tag(
+    info: &DwarfInfo,
+    unit: &mut gimli::write::Unit,
+    parent: gimli::write::UnitEntryId,
+    dwarf2_types: &mut Dwarf2Types,
+    tag: &Tag,
+) -> Result<UnionType> {
     ensure!(tag.kind == TagKind::UnionType, "{:?} is not a UnionType tag", tag.kind);
+
+    let new_union_id = unit.add(parent, gimli::DW_TAG_union_type);
+    dwarf2_types.old_new_tag_map.insert(tag.key, new_union_id);
 
     let mut name = None;
     let mut byte_size = None;
@@ -977,25 +843,58 @@ fn process_union_tag(info: &DwarfInfo, tag: &Tag) -> Result<UnionType> {
 
     let mut members = Vec::new();
     for child in tag.children(&info.tags) {
-        // TODO DWARF122 process_structure_member_tag
-        // match child.kind {
-        //     TagKind::Member => members.push(process_structure_member_tag(info, child)?),
-        //     TagKind::StructureType
-        //     | TagKind::ArrayType
-        //     | TagKind::EnumerationType
-        //     | TagKind::UnionType
-        //     | TagKind::ClassType
-        //     | TagKind::SubroutineType
-        //     | TagKind::PtrToMemberType
-        //     | TagKind::Typedef => {
-        //         // Variable type, ignore
-        //     }
-        //     kind => bail!("Unhandled UnionType child {:?}", kind),
-        // }
+        match child.kind {
+            TagKind::Member => members.push(process_structure_member_tag(
+                info,
+                unit,
+                new_union_id,
+                dwarf2_types,
+                child,
+            )?),
+            TagKind::StructureType
+            | TagKind::ArrayType
+            | TagKind::EnumerationType
+            | TagKind::UnionType
+            | TagKind::ClassType
+            | TagKind::SubroutineType
+            | TagKind::PtrToMemberType
+            | TagKind::Typedef => {
+                // Variable type, ignore
+            }
+            kind => bail!("Unhandled UnionType child {:?}", kind),
+        }
     }
 
     let byte_size = byte_size.ok_or_else(|| anyhow!("UnionType without ByteSize: {:?}", tag))?;
+
+    let new_union_tag = unit.get_mut(new_union_id);
+    if let Some(ref name) = name {
+        new_union_tag.set(
+            gimli::DW_AT_name,
+            gimli::write::AttributeValue::String(name.clone().into_bytes()),
+        );
+    }
+
+    new_union_tag.set(gimli::DW_AT_byte_size, unsigned_dwarf_value(byte_size));
+
     Ok(UnionType { name, byte_size, members })
+}
+
+fn ref_fixup_union_tag(
+    info: &DwarfInfo,
+    unit: &mut gimli::write::Unit,
+    dwarf2_types: &mut Dwarf2Types,
+    tag: &Tag,
+) -> Result<()> {
+    ensure!(tag.kind == TagKind::UnionType, "{:?} is not a UnionType tag", tag.kind);
+
+    for child in tag.children(&info.tags) {
+        if matches!(child.kind, TagKind::Member) {
+            ref_fixup_structure_member_tag(info, unit, dwarf2_types, child)?
+        }
+    }
+
+    Ok(())
 }
 
 fn process_subroutine_tag(
@@ -1192,13 +1091,17 @@ fn process_subroutine_tag(
                     dwarf2_types,
                     child,
                 )?))
-            } // TOO DWARF122 parent
+            } // TODO DWARF122 parent
             TagKind::EnumerationType => inner_types.push(UserDefinedType::Enumeration(
                 process_enumeration_tag(info, unit, new_subroutine_id, dwarf2_types, child)?,
             )),
-            TagKind::UnionType => {
-                inner_types.push(UserDefinedType::Union(process_union_tag(info, child)?))
-            }
+            TagKind::UnionType => inner_types.push(UserDefinedType::Union(process_union_tag(
+                info,
+                unit,
+                new_subroutine_id,
+                dwarf2_types,
+                child,
+            )?)),
             TagKind::Typedef => {
                 typedefs.push(process_typedef_tag(info, unit, dwarf2_types, child)?)
             }
@@ -1367,7 +1270,14 @@ fn process_subroutine_block_tag(
                 )?));
             }
             TagKind::UnionType => {
-                inner_types.push(UserDefinedType::Union(process_union_tag(info, child)?))
+                // TODO DWARF122 pass parent
+                inner_types.push(UserDefinedType::Union(process_union_tag(
+                    info,
+                    unit,
+                    unit.root(),
+                    dwarf2_types,
+                    child,
+                )?))
             }
             TagKind::Typedef => {
                 typedefs.push(process_typedef_tag(info, unit, dwarf2_types, child)?);
@@ -1575,7 +1485,13 @@ pub fn ud_type(
             dwarf2_types,
             tag,
         )?)),
-        TagKind::UnionType => Ok(UserDefinedType::Union(process_union_tag(info, tag)?)),
+        TagKind::UnionType => Ok(UserDefinedType::Union(process_union_tag(
+            info,
+            unit,
+            unit.root(),
+            dwarf2_types,
+            tag,
+        )?)),
         TagKind::SubroutineType | TagKind::GlobalSubroutine | TagKind::Subroutine => {
             Ok(UserDefinedType::Subroutine(process_subroutine_tag(
                 info,
@@ -1860,6 +1776,9 @@ pub fn ref_fixup_cu_tag(
         // TODO DWARF122 union, subroutine, ptrtomember, typedef
         TagKind::ArrayType => {
             let _ = ref_fixup_array_tag(info, unit, dwarf2_types, tag);
+        }
+        TagKind::UnionType => {
+            let _ = ref_fixup_union_tag(info, unit, dwarf2_types, tag);
         }
         TagKind::GlobalVariable | TagKind::LocalVariable => {
             let _ = ref_fixup_variable_tag(info, unit, dwarf2_types, tag);
