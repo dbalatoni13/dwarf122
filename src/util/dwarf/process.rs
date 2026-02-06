@@ -1105,7 +1105,7 @@ fn ref_fixup_subroutine_tag(
     unit: &mut gimli::write::Unit,
     dwarf2_types: &mut Dwarf2Types,
     tag: &Tag,
-) -> Result<SubroutineType> {
+) -> Result<()> {
     let new_subroutine_id = dwarf2_types
         .old_new_tag_map
         .get(&tag.key)
@@ -1116,7 +1116,6 @@ fn ref_fixup_subroutine_tag(
     let mut mangled_name = None;
     let mut return_type = None;
     let mut prototyped = false;
-    let mut parameters = Vec::new();
     let mut var_args = false;
     let mut references = Vec::new();
     let mut member_of = None;
@@ -1142,8 +1141,8 @@ fn ref_fixup_subroutine_tag(
                 return_type = Some(process_type(unit, dwarf2_types, attr, info.e)?);
             }
             (AttributeKind::Prototyped, _) => prototyped = true,
-            (AttributeKind::LowPc, &AttributeValue::Address(addr)) => {}
-            (AttributeKind::HighPc, &AttributeValue::Address(addr)) => {}
+            (AttributeKind::LowPc, &AttributeValue::Address(_addr)) => {}
+            (AttributeKind::HighPc, &AttributeValue::Address(_addr)) => {}
             (AttributeKind::MwGlobalRef, &AttributeValue::Reference(key)) => {
                 references.push(key);
             }
@@ -1192,22 +1191,15 @@ fn ref_fixup_subroutine_tag(
             (AttributeKind::Inline, _) => inline = true,
             (AttributeKind::Virtual, _) => virtual_ = true,
             (AttributeKind::Specification, &AttributeValue::Reference(key)) => {
-                let spec_tag = info
-                    .tags
+                let spec_id = dwarf2_types
+                    .old_new_tag_map
                     .get(&key)
-                    .ok_or_else(|| anyhow!("Failed to locate specification tag {}", key))?;
-                // Merge attributes from specification tag
-                let spec = ref_fixup_subroutine_tag(info, unit, dwarf2_types, spec_tag)?;
-                name = name.or(spec.name);
-                mangled_name = mangled_name.or(spec.mangled_name);
-                return_type = return_type.or(spec.return_type);
-                prototyped = prototyped || spec.prototyped;
-                parameters.extend(spec.parameters);
-                var_args = var_args || spec.var_args;
-                references.extend(spec.references);
-                member_of = member_of.or(spec.member_of);
-                inline = inline || spec.inline;
-                virtual_ = virtual_ || spec.virtual_;
+                    .cloned()
+                    .ok_or_else(|| anyhow!("Unknown spec"))?;
+                unit.get_mut(new_subroutine_id).set(
+                    gimli::DW_AT_specification,
+                    gimli::write::AttributeValue::UnitRef(spec_id),
+                );
             }
             _ => {
                 bail!("Unhandled SubroutineType attribute {:?}", attr);
@@ -1215,13 +1207,11 @@ fn ref_fixup_subroutine_tag(
         }
     }
 
-    let mut blocks_and_inlines = Vec::new();
     let mut typedefs = Vec::new();
     for child in tag.children(&info.tags) {
         match child.kind {
             TagKind::FormalParameter => {
-                let param = ref_fixup_subroutine_parameter_tag(info, unit, dwarf2_types, child)?;
-                parameters.push(param);
+                ref_fixup_subroutine_parameter_tag(info, unit, dwarf2_types, child)?;
             }
             TagKind::UnspecifiedParameters => var_args = true,
             TagKind::LocalVariable => {
@@ -1237,9 +1227,9 @@ fn ref_fixup_subroutine_tag(
             TagKind::LexicalBlock => {
                 ref_fixup_subroutine_block_tag(info, unit, dwarf2_types, child)?;
             }
-            TagKind::InlinedSubroutine => blocks_and_inlines.push(SubroutineNode::Inline(
-                ref_fixup_subroutine_tag(info, unit, dwarf2_types, child)?,
-            )),
+            TagKind::InlinedSubroutine => {
+                ref_fixup_subroutine_tag(info, unit, dwarf2_types, child)?;
+            }
             TagKind::StructureType | TagKind::ClassType => {
                 ref_fixup_structure_tag(info, unit, dwarf2_types, child)?;
             }
@@ -1280,19 +1270,7 @@ fn ref_fixup_subroutine_tag(
             .set(gimli::DW_AT_type, gimli::write::AttributeValue::UnitRef(return_type.entry_id));
     }
 
-    let subroutine = SubroutineType {
-        name,
-        mangled_name,
-        return_type,
-        parameters,
-        var_args,
-        prototyped,
-        references,
-        member_of,
-        inline,
-        virtual_,
-    };
-    Ok(subroutine)
+    Ok(())
 }
 
 fn process_subroutine_label_tag(info: &DwarfInfo, tag: &Tag) -> Result<SubroutineLabel> {
@@ -1508,7 +1486,7 @@ fn ref_fixup_subroutine_parameter_tag(
     unit: &mut gimli::write::Unit,
     dwarf2_types: &mut Dwarf2Types,
     tag: &Tag,
-) -> Result<SubroutineParameter> {
+) -> Result<()> {
     ensure!(tag.kind == TagKind::FormalParameter, "{:?} is not a FormalParameter tag", tag.kind);
 
     let new_parameter_id = dwarf2_types
@@ -1517,13 +1495,10 @@ fn ref_fixup_subroutine_parameter_tag(
         .cloned()
         .ok_or_else(|| anyhow!("Unknown parameter tag"))?;
 
-    let mut name = None;
     let mut kind = None;
-    let mut location = None;
     for attr in &tag.attributes {
         match (attr.kind, &attr.value) {
             (AttributeKind::Sibling, _) => {}
-            (AttributeKind::Name, AttributeValue::String(s)) => name = Some(s.clone()),
             (
                 AttributeKind::FundType
                 | AttributeKind::ModFundType
@@ -1533,11 +1508,7 @@ fn ref_fixup_subroutine_parameter_tag(
             ) => {
                 kind = Some(process_type(unit, dwarf2_types, attr, info.e)?);
             }
-            (AttributeKind::Location, AttributeValue::Block(block)) => {
-                if !block.is_empty() {
-                    location = Some(process_variable_location(block, tag.data_endian)?);
-                }
-            }
+            (AttributeKind::Location, AttributeValue::Block(block)) => {}
             (AttributeKind::MwDwarf2Location, AttributeValue::Block(_block)) => {
                 // TODO?
                 // info!("MwDwarf2Location: {:?} in {:?}", block, tag);
@@ -1547,17 +1518,17 @@ fn ref_fixup_subroutine_parameter_tag(
                 // info!("ConstValueBlock: {:?} in {:?}", block, tag);
             }
             (AttributeKind::Specification, &AttributeValue::Reference(key)) => {
-                let spec_tag = info
-                    .tags
+                let spec_id = dwarf2_types
+                    .old_new_tag_map
                     .get(&key)
-                    .ok_or_else(|| anyhow!("Failed to locate specification tag {}", key))?;
-                // Merge attributes from specification tag
-                let spec = ref_fixup_subroutine_parameter_tag(info, unit, dwarf2_types, spec_tag)?;
-                name = name.or(spec.name);
-                kind = kind.or(Some(spec.kind));
-                location = location.or(spec.location);
+                    .cloned()
+                    .ok_or_else(|| anyhow!("Unknown spec"))?;
+                unit.get_mut(new_parameter_id).set(
+                    gimli::DW_AT_specification,
+                    gimli::write::AttributeValue::UnitRef(spec_id),
+                );
             }
-            _ => bail!("Unhandled SubroutineParameter attribute {:?}", attr),
+            _ => {}
         }
     }
 
@@ -1565,12 +1536,12 @@ fn ref_fixup_subroutine_parameter_tag(
         bail!("Unhandled SubroutineParameter child {:?}", child.kind);
     }
 
-    let kind = kind.ok_or_else(|| anyhow!("SubroutineParameter without type: {:?}", tag))?;
+    if let Some(kind) = kind {
+        unit.get_mut(new_parameter_id)
+            .set(gimli::DW_AT_type, gimli::write::AttributeValue::UnitRef(kind.entry_id));
+    }
 
-    unit.get_mut(new_parameter_id)
-        .set(gimli::DW_AT_type, gimli::write::AttributeValue::UnitRef(kind.entry_id));
-
-    Ok(SubroutineParameter { name, kind, location })
+    Ok(())
 }
 
 fn process_local_variable_tag(
@@ -1639,10 +1610,10 @@ fn ref_fixup_local_variable_tag(
     unit: &mut gimli::write::Unit,
     dwarf2_types: &mut Dwarf2Types,
     tag: &Tag,
-) -> Result<SubroutineVariable> {
+) -> Result<()> {
     ensure!(tag.kind == TagKind::LocalVariable, "{:?} is not a LocalVariable tag", tag.kind);
 
-    let new_parameter_id = dwarf2_types
+    let new_local_var_id = dwarf2_types
         .old_new_tag_map
         .get(&tag.key)
         .cloned()
@@ -1676,15 +1647,15 @@ fn ref_fixup_local_variable_tag(
                 // info!("MwDwarf2Location: {:?} in {:?}", block, tag);
             }
             (AttributeKind::Specification, &AttributeValue::Reference(key)) => {
-                let spec_tag = info
-                    .tags
+                let spec_id = dwarf2_types
+                    .old_new_tag_map
                     .get(&key)
-                    .ok_or_else(|| anyhow!("Failed to locate specification tag {}", key))?;
-                // Merge attributes from specification tag
-                let spec = ref_fixup_local_variable_tag(info, unit, dwarf2_types, spec_tag)?;
-                name = name.or(spec.name);
-                kind = kind.or(Some(spec.kind));
-                location = location.or(spec.location);
+                    .cloned()
+                    .ok_or_else(|| anyhow!("Unknown spec"))?;
+                unit.get_mut(new_local_var_id).set(
+                    gimli::DW_AT_specification,
+                    gimli::write::AttributeValue::UnitRef(spec_id),
+                );
             }
             _ => {
                 bail!("Unhandled LocalVariable attribute {:?}", attr);
@@ -1696,12 +1667,12 @@ fn ref_fixup_local_variable_tag(
         bail!("Unhandled LocalVariable child {:?}", child.kind);
     }
 
-    let kind = kind.ok_or_else(|| anyhow!("LocalVariable without type: {:?}", tag))?;
+    if let Some(kind) = kind {
+        unit.get_mut(new_local_var_id)
+            .set(gimli::DW_AT_type, gimli::write::AttributeValue::UnitRef(kind.entry_id));
+    }
 
-    unit.get_mut(new_parameter_id)
-        .set(gimli::DW_AT_type, gimli::write::AttributeValue::UnitRef(kind.entry_id));
-
-    Ok(SubroutineVariable { name, mangled_name, kind, location })
+    Ok(())
 }
 
 // TODO DWARF122
@@ -2089,7 +2060,7 @@ fn process_typedef_tag(
 ) -> Result<()> {
     ensure!(tag.kind == TagKind::Typedef, "{:?} is not a typedef tag", tag.kind);
 
-    // Create it only if it doesn't exist (because of specification tags)
+    // maybe we can always just create it?
     let new_typedef_id = *dwarf2_types
         .old_new_tag_map
         .entry(tag.key)
@@ -2134,8 +2105,14 @@ fn ref_fixup_typedef_tag(
     unit: &mut gimli::write::Unit,
     dwarf2_types: &mut Dwarf2Types,
     tag: &Tag,
-) -> Result<TypedefTag> {
+) -> Result<()> {
     ensure!(tag.kind == TagKind::Typedef, "{:?} is not a typedef tag", tag.kind);
+
+    let new_typedef_id = dwarf2_types
+        .old_new_tag_map
+        .get(&tag.key)
+        .cloned()
+        .ok_or_else(|| anyhow!("Unknown typedef"))?;
 
     let mut name = None;
     let mut kind = None;
@@ -2152,14 +2129,15 @@ fn ref_fixup_typedef_tag(
                 kind = Some(process_type(unit, dwarf2_types, attr, info.e)?);
             }
             (AttributeKind::Specification, &AttributeValue::Reference(key)) => {
-                let spec_tag = info
-                    .tags
+                let spec_id = dwarf2_types
+                    .old_new_tag_map
                     .get(&key)
-                    .ok_or_else(|| anyhow!("Failed to locate specification tag {}", key))?;
-                // Merge attributes from specification tag
-                let spec = ref_fixup_typedef_tag(info, unit, dwarf2_types, spec_tag)?;
-                name = name.or(Some(spec.name));
-                kind = kind.or(Some(spec.kind));
+                    .cloned()
+                    .ok_or_else(|| anyhow!("Unknown spec"))?;
+                unit.get_mut(new_typedef_id).set(
+                    gimli::DW_AT_specification,
+                    gimli::write::AttributeValue::UnitRef(spec_id),
+                );
             }
             _ => {}
         }
@@ -2169,19 +2147,12 @@ fn ref_fixup_typedef_tag(
         bail!("Unhandled Typedef child {:?}", child.kind);
     }
 
-    let name = name.ok_or_else(|| anyhow!("Typedef without Name: {:?}", tag))?;
-    let kind = kind.ok_or_else(|| anyhow!("Typedef without Type: {:?}", tag))?;
+    if let Some(kind) = kind {
+        unit.get_mut(new_typedef_id)
+            .set(gimli::DW_AT_type, gimli::write::AttributeValue::UnitRef(kind.entry_id));
+    }
 
-    let new_typedef_id = dwarf2_types
-        .old_new_tag_map
-        .get(&tag.key)
-        .cloned()
-        .ok_or_else(|| anyhow!("Unknown typedef"))?;
-
-    unit.get_mut(new_typedef_id)
-        .set(gimli::DW_AT_type, gimli::write::AttributeValue::UnitRef(kind.entry_id));
-
-    Ok(TypedefTag { name, kind })
+    Ok(())
 }
 
 fn process_variable_tag(
