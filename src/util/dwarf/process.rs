@@ -326,7 +326,7 @@ fn process_structure_tag(
     inside_function: bool,
     dwarf2_types: &mut Dwarf2Types,
     tag: &Tag,
-) -> Result<StructureType> {
+) -> Result<()> {
     ensure!(
         matches!(tag.kind, TagKind::StructureType | TagKind::ClassType),
         "{:?} is not a Structure type tag",
@@ -357,7 +357,6 @@ fn process_structure_tag(
     let mut members = Vec::new();
     let mut static_members = Vec::new();
     let mut bases = Vec::new();
-    let mut inner_types = Vec::new();
     let mut typedefs = Vec::new();
 
     let real_parent = if nested || inside_function { parent } else { unit.root() };
@@ -394,13 +393,7 @@ fn process_structure_tag(
                     Producer::MWCC => {
                         // TODO handle visibility
                         // MWCC handles static members as typedefs for whatever reason
-                        static_members.push(process_variable_tag(
-                            info,
-                            unit,
-                            new_struct_id,
-                            dwarf2_types,
-                            child,
-                        )?)
+                        process_variable_tag(info, unit, new_struct_id, dwarf2_types, child)?;
                     }
                     _ => {
                         typedefs.push(process_typedef_tag(
@@ -427,25 +420,21 @@ fn process_structure_tag(
                 )?)
             }
             TagKind::StructureType | TagKind::ClassType => {
-                inner_types.push(UserDefinedType::Structure(process_structure_tag(
+                process_structure_tag(
                     info,
                     unit,
                     new_struct_id,
                     inside_function,
                     dwarf2_types,
                     child,
-                )?))
+                )?;
             }
-            TagKind::EnumerationType => inner_types.push(UserDefinedType::Enumeration(
-                process_enumeration_tag(info, unit, new_struct_id, dwarf2_types, child)?,
-            )),
-            TagKind::UnionType => inner_types.push(UserDefinedType::Union(process_union_tag(
-                info,
-                unit,
-                new_struct_id,
-                dwarf2_types,
-                child,
-            )?)),
+            TagKind::EnumerationType => {
+                process_enumeration_tag(info, unit, new_struct_id, dwarf2_types, child)?;
+            }
+            TagKind::UnionType => {
+                process_union_tag(info, unit, new_struct_id, dwarf2_types, child)?;
+            }
             TagKind::ArrayType | TagKind::SubroutineType | TagKind::PtrToMemberType => {
                 // Variable type, ignore
             }
@@ -453,19 +442,7 @@ fn process_structure_tag(
         }
     }
 
-    Ok(StructureType {
-        kind: if tag.kind == TagKind::ClassType {
-            StructureKind::Class
-        } else {
-            StructureKind::Struct
-        },
-        name,
-        byte_size,
-        members,
-        static_members,
-        bases,
-        inner_types,
-    })
+    Ok(())
 }
 
 fn ref_fixup_structure_tag(
@@ -526,7 +503,7 @@ fn process_array_tag(
     unit: &mut gimli::write::Unit,
     dwarf2_types: &mut Dwarf2Types,
     tag: &Tag,
-) -> Result<ArrayType> {
+) -> Result<()> {
     ensure!(tag.kind == TagKind::ArrayType, "{:?} is not an ArrayType tag", tag.kind);
 
     let new_array_id = unit.add(unit.root(), gimli::DW_TAG_array_type);
@@ -565,7 +542,7 @@ fn process_array_tag(
 
     let (element_type, dimensions) =
         subscr_data.ok_or_else(|| anyhow!("ArrayType without SubscrData: {:?}", tag))?;
-    Ok(ArrayType { element_type: Box::from(element_type), dimensions })
+    Ok(())
 }
 
 fn ref_fixup_array_tag(
@@ -701,7 +678,7 @@ fn process_enumeration_tag(
     parent: gimli::write::UnitEntryId,
     dwarf2_types: &mut Dwarf2Types,
     tag: &Tag,
-) -> Result<EnumerationType> {
+) -> Result<()> {
     ensure!(tag.kind == TagKind::EnumerationType, "{:?} is not an EnumerationType tag", tag.kind);
 
     let new_enum_id = unit.add(parent, gimli::DW_TAG_enumeration_type);
@@ -791,7 +768,7 @@ fn process_enumeration_tag(
             .set(gimli::DW_AT_const_value, unsigned_dwarf_value(member.value as u32));
     }
 
-    Ok(EnumerationType { name, byte_size, members })
+    Ok(())
 }
 
 fn process_union_tag(
@@ -800,7 +777,7 @@ fn process_union_tag(
     parent: gimli::write::UnitEntryId,
     dwarf2_types: &mut Dwarf2Types,
     tag: &Tag,
-) -> Result<UnionType> {
+) -> Result<()> {
     ensure!(tag.kind == TagKind::UnionType, "{:?} is not a UnionType tag", tag.kind);
 
     let new_union_id = unit.add(parent, gimli::DW_TAG_union_type);
@@ -846,8 +823,6 @@ fn process_union_tag(
         }
     }
 
-    let byte_size = byte_size.ok_or_else(|| anyhow!("UnionType without ByteSize: {:?}", tag))?;
-
     let new_union_tag = unit.get_mut(new_union_id);
     if let Some(ref name) = name {
         new_union_tag.set(
@@ -855,10 +830,11 @@ fn process_union_tag(
             gimli::write::AttributeValue::String(name.clone().into_bytes()),
         );
     }
+    if let Some(byte_size) = byte_size {
+        new_union_tag.set(gimli::DW_AT_byte_size, unsigned_dwarf_value(byte_size));
+    }
 
-    new_union_tag.set(gimli::DW_AT_byte_size, unsigned_dwarf_value(byte_size));
-
-    Ok(UnionType { name, byte_size, members })
+    Ok(())
 }
 
 fn ref_fixup_union_tag(
@@ -884,7 +860,7 @@ fn process_subroutine_tag(
     parent: gimli::write::UnitEntryId,
     dwarf2_types: &mut Dwarf2Types,
     tag: &Tag,
-) -> Result<SubroutineType> {
+) -> Result<()> {
     let subroutine_type = match tag.kind {
         TagKind::GlobalSubroutine => gimli::DW_TAG_subprogram,
         TagKind::Subroutine => gimli::DW_TAG_subprogram,
@@ -898,7 +874,6 @@ fn process_subroutine_tag(
     let mut name = None;
     let mut mangled_name = None;
     let mut prototyped = false;
-    let mut parameters = Vec::new();
     let mut var_args = false;
     let mut references = Vec::new();
     let mut member_of = None;
@@ -985,7 +960,6 @@ fn process_subroutine_tag(
     }
 
     let mut labels = Vec::new();
-    let mut inner_types = Vec::new();
     let mut typedefs = Vec::new();
     for child in tag.children(&info.tags) {
         match child.kind {
@@ -1013,25 +987,14 @@ fn process_subroutine_tag(
                 process_subroutine_tag(info, unit, new_subroutine_id, dwarf2_types, child)?;
             }
             TagKind::StructureType | TagKind::ClassType => {
-                inner_types.push(UserDefinedType::Structure(process_structure_tag(
-                    info,
-                    unit,
-                    new_subroutine_id,
-                    true,
-                    dwarf2_types,
-                    child,
-                )?))
+                process_structure_tag(info, unit, new_subroutine_id, true, dwarf2_types, child)?;
             }
-            TagKind::EnumerationType => inner_types.push(UserDefinedType::Enumeration(
-                process_enumeration_tag(info, unit, new_subroutine_id, dwarf2_types, child)?,
-            )),
-            TagKind::UnionType => inner_types.push(UserDefinedType::Union(process_union_tag(
-                info,
-                unit,
-                new_subroutine_id,
-                dwarf2_types,
-                child,
-            )?)),
+            TagKind::EnumerationType => {
+                process_enumeration_tag(info, unit, new_subroutine_id, dwarf2_types, child)?;
+            }
+            TagKind::UnionType => {
+                process_union_tag(info, unit, new_subroutine_id, dwarf2_types, child)?;
+            }
             TagKind::Typedef => typedefs.push(process_typedef_tag(
                 info,
                 unit,
@@ -1085,19 +1048,7 @@ fn process_subroutine_tag(
         );
     }
 
-    let subroutine = SubroutineType {
-        name,
-        mangled_name,
-        return_type: None,
-        parameters,
-        var_args,
-        prototyped,
-        references,
-        member_of,
-        inline,
-        virtual_,
-    };
-    Ok(subroutine)
+    Ok(())
 }
 
 fn ref_fixup_subroutine_tag(
@@ -1681,7 +1632,7 @@ fn process_ptr_to_member_tag(
     unit: &mut gimli::write::Unit,
     dwarf2_types: &mut Dwarf2Types,
     tag: &Tag,
-) -> Result<PtrToMemberType> {
+) -> Result<()> {
     ensure!(tag.kind == TagKind::PtrToMemberType, "{:?} is not a PtrToMemberType tag", tag.kind);
 
     let mut kind = None;
@@ -1715,7 +1666,7 @@ fn process_ptr_to_member_tag(
     let kind = kind.ok_or_else(|| anyhow!("PtrToMemberType without type: {:?}", tag))?;
     let containing_type = containing_type
         .ok_or_else(|| anyhow!("PtrToMemberType without containing type: {:?}", tag))?;
-    Ok(PtrToMemberType { kind, containing_type })
+    Ok(())
 }
 
 pub fn ud_type(
@@ -1723,43 +1674,20 @@ pub fn ud_type(
     unit: &mut gimli::write::Unit,
     dwarf2_types: &mut Dwarf2Types,
     tag: &Tag,
-) -> Result<UserDefinedType> {
+) -> Result<()> {
     match tag.kind {
-        TagKind::ArrayType => {
-            Ok(UserDefinedType::Array(process_array_tag(info, unit, dwarf2_types, tag)?))
+        TagKind::ArrayType => Ok(process_array_tag(info, unit, dwarf2_types, tag)?),
+        TagKind::StructureType | TagKind::ClassType => {
+            Ok(process_structure_tag(info, unit, unit.root(), false, dwarf2_types, tag)?)
         }
-        TagKind::StructureType | TagKind::ClassType => Ok(UserDefinedType::Structure(
-            process_structure_tag(info, unit, unit.root(), false, dwarf2_types, tag)?,
-        )),
-        TagKind::EnumerationType => Ok(UserDefinedType::Enumeration(process_enumeration_tag(
-            info,
-            unit,
-            unit.root(),
-            dwarf2_types,
-            tag,
-        )?)),
-        TagKind::UnionType => Ok(UserDefinedType::Union(process_union_tag(
-            info,
-            unit,
-            unit.root(),
-            dwarf2_types,
-            tag,
-        )?)),
+        TagKind::EnumerationType => {
+            Ok(process_enumeration_tag(info, unit, unit.root(), dwarf2_types, tag)?)
+        }
+        TagKind::UnionType => Ok(process_union_tag(info, unit, unit.root(), dwarf2_types, tag)?),
         TagKind::SubroutineType | TagKind::GlobalSubroutine | TagKind::Subroutine => {
-            Ok(UserDefinedType::Subroutine(process_subroutine_tag(
-                info,
-                unit,
-                unit.root(),
-                dwarf2_types,
-                tag,
-            )?))
+            Ok(process_subroutine_tag(info, unit, unit.root(), dwarf2_types, tag)?)
         }
-        TagKind::PtrToMemberType => Ok(UserDefinedType::PtrToMember(process_ptr_to_member_tag(
-            info,
-            unit,
-            dwarf2_types,
-            tag,
-        )?)),
+        TagKind::PtrToMemberType => Ok(process_ptr_to_member_tag(info, unit, dwarf2_types, tag)?),
         kind => Err(anyhow!("Unhandled user defined type {kind:?}")),
     }
 }
@@ -1995,13 +1923,11 @@ pub fn process_cu_tag(
     unit: &mut gimli::write::Unit,
     dwarf2_types: &mut Dwarf2Types,
     tag: &Tag,
-) -> Result<TagType> {
+) -> Result<()> {
     match tag.kind {
-        TagKind::Typedef => {
-            Ok(TagType::Typedef(process_typedef_tag(info, unit, unit.root(), dwarf2_types, tag)?))
-        }
+        TagKind::Typedef => Ok(process_typedef_tag(info, unit, unit.root(), dwarf2_types, tag)?),
         TagKind::GlobalVariable | TagKind::LocalVariable => {
-            Ok(TagType::Variable(process_variable_tag(info, unit, unit.root(), dwarf2_types, tag)?))
+            Ok(process_variable_tag(info, unit, unit.root(), dwarf2_types, tag)?)
         }
         TagKind::StructureType
         | TagKind::ArrayType
@@ -2011,9 +1937,7 @@ pub fn process_cu_tag(
         | TagKind::SubroutineType
         | TagKind::GlobalSubroutine
         | TagKind::Subroutine
-        | TagKind::PtrToMemberType => {
-            Ok(TagType::UserDefined(Box::new(ud_type(info, unit, dwarf2_types, tag)?)))
-        }
+        | TagKind::PtrToMemberType => Ok(ud_type(info, unit, dwarf2_types, tag)?),
         kind => Err(anyhow!("Unhandled root tag type {:?}", kind)),
     }
 }
@@ -2039,15 +1963,6 @@ pub fn ref_fixup_cu_tag(
             ref_fixup_structure_tag(info, unit, dwarf2_types, tag)
         }
         _ => Ok(()),
-    }
-}
-
-/// Logic to skip uninteresting tags
-pub fn should_skip_tag(tag_type: &TagType, is_erased: bool) -> bool {
-    match tag_type {
-        TagType::Variable(_) => is_erased,
-        TagType::Typedef(_) => false,
-        TagType::UserDefined(t) => !t.is_definition(),
     }
 }
 
@@ -2163,7 +2078,7 @@ fn process_variable_tag(
     parent: gimli::write::UnitEntryId,
     dwarf2_types: &mut Dwarf2Types,
     tag: &Tag,
-) -> Result<VariableTag> {
+) -> Result<()> {
     let is_variable = match tag.kind {
         TagKind::GlobalVariable | TagKind::LocalVariable => true,
         TagKind::Typedef if info.producer == Producer::MWCC => true,
@@ -2221,7 +2136,7 @@ fn process_variable_tag(
         global_var.set(gimli::DW_AT_location, gimli::write::AttributeValue::Exprloc(expr));
     }
 
-    Ok(VariableTag { name, mangled_name, address, local })
+    Ok(())
 }
 
 fn ref_fixup_variable_tag(

@@ -24,7 +24,7 @@ use crate::{
             io::{parse_producer, read_debug_section},
             process::{
                 build_fundemantal_typemap, create_void_pointer, process_compile_unit,
-                process_cu_tag, process_overlay_branch, ref_fixup_cu_tag, should_skip_tag,
+                process_cu_tag, process_overlay_branch, ref_fixup_cu_tag,
             },
             types::{AttributeKind, Dwarf2Types, TagKind, TypedefMap},
         },
@@ -329,11 +329,6 @@ where
                                 continue;
                             }
                         };
-                        // TODO DWARF122 is this needed?
-                        if should_skip_tag(&tag_type, child.is_erased) {
-                            continue;
-                        }
-
                         if let TagKind::Typedef = child.kind {
                             // TODO fundamental typedefs?
                             if let Some(ud_type_ref) =
