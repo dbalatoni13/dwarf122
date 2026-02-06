@@ -354,11 +354,6 @@ fn process_structure_tag(
         }
     }
 
-    let mut members = Vec::new();
-    let mut static_members = Vec::new();
-    let mut bases = Vec::new();
-    let mut typedefs = Vec::new();
-
     let real_parent = if nested || inside_function { parent } else { unit.root() };
 
     let new_struct_id = unit.add(real_parent, gimli::DW_TAG_structure_type);
@@ -379,15 +374,11 @@ fn process_structure_tag(
     for child in tag.children(&info.tags) {
         match child.kind {
             TagKind::Inheritance => {
-                bases.push(process_inheritance_tag(info, unit, new_struct_id, dwarf2_types, child)?)
+                process_inheritance_tag(info, unit, new_struct_id, dwarf2_types, child)?;
             }
-            TagKind::Member => members.push(process_structure_member_tag(
-                info,
-                unit,
-                new_struct_id,
-                dwarf2_types,
-                child,
-            )?),
+            TagKind::Member => {
+                process_structure_member_tag(info, unit, new_struct_id, dwarf2_types, child)?;
+            }
             TagKind::Typedef => {
                 match info.producer {
                     Producer::MWCC => {
@@ -396,28 +387,16 @@ fn process_structure_tag(
                         process_variable_tag(info, unit, new_struct_id, dwarf2_types, child)?;
                     }
                     _ => {
-                        typedefs.push(process_typedef_tag(
-                            info,
-                            unit,
-                            new_struct_id,
-                            dwarf2_types,
-                            child,
-                        )?);
+                        process_typedef_tag(info, unit, new_struct_id, dwarf2_types, child)?;
                     }
                 }
             }
             TagKind::Subroutine | TagKind::GlobalSubroutine => {
-                // TODO
+                process_subroutine_tag(info, unit, new_struct_id, dwarf2_types, child)?;
             }
             TagKind::GlobalVariable => {
                 // TODO handle visibility
-                static_members.push(process_variable_tag(
-                    info,
-                    unit,
-                    new_struct_id,
-                    dwarf2_types,
-                    child,
-                )?)
+                process_variable_tag(info, unit, new_struct_id, dwarf2_types, child)?;
             }
             TagKind::StructureType | TagKind::ClassType => {
                 process_structure_tag(
@@ -478,7 +457,7 @@ fn ref_fixup_structure_tag(
                 }
             }
             TagKind::Subroutine | TagKind::GlobalSubroutine => {
-                // TODO
+                ref_fixup_subroutine_tag(info, unit, dwarf2_types, child)?;
             }
             TagKind::GlobalVariable => {
                 // TODO handle visibility
@@ -1750,7 +1729,7 @@ pub fn process_type(
                 .old_new_tag_map
                 .get(&ud_ref)
                 .cloned()
-                .ok_or_else(|| anyhow!("Unknown user type {:X}", ud_ref))?;
+                .ok_or_else(|| anyhow!("Unknown modified user type {:X}", ud_ref))?;
             let modified_type_id =
                 create_or_get_modified_type(unit, dwarf2_types, entry_id, &modifiers)?;
             Ok(Type { kind: TypeKind::UserDefined(ud_ref), modifiers, entry_id: modified_type_id })
