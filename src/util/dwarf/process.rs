@@ -494,39 +494,10 @@ fn process_array_tag(
     let new_array_id = unit.add(unit.root(), gimli::DW_TAG_array_type);
     dwarf2_types.old_new_tag_map.insert(tag.key, new_array_id);
 
-    // TODO DWARF122 remove these, as it has to be done in the fixup stage
-    let mut subscr_data = None;
-    for attr in &tag.attributes {
-        match (attr.kind, &attr.value) {
-            (AttributeKind::Sibling, _) => {}
-            (AttributeKind::SubscrData, AttributeValue::Block(data)) => {
-                subscr_data = Some(
-                    process_array_subscript_data(unit, dwarf2_types, data, info.e).with_context(
-                        || format!("Failed to process SubscrData for tag: {tag:?}"),
-                    )?,
-                )
-            }
-            (AttributeKind::Ordering, val) => match val {
-                AttributeValue::Data2(d2) => {
-                    let order = ArrayOrdering::try_from_primitive(*d2)?;
-                    if order == ArrayOrdering::ColMajor {
-                        log::warn!("Column Major Ordering in Tag {}, Cannot guarantee array will be correct if original source is in different programming language.", tag.key);
-                    }
-                }
-                _ => bail!("Unhandled ArrayType attribute {:?}", attr),
-            },
-            _ => {
-                bail!("Unhandled ArrayType attribute {:?}", attr)
-            }
-        }
-    }
-
     if let Some(child) = tag.children(&info.tags).first() {
         bail!("Unhandled ArrayType child {:?}", child.kind);
     }
 
-    let (element_type, dimensions) =
-        subscr_data.ok_or_else(|| anyhow!("ArrayType without SubscrData: {:?}", tag))?;
     Ok(())
 }
 
@@ -1164,7 +1135,6 @@ fn ref_fixup_subroutine_tag(
         }
     }
 
-    let mut typedefs = Vec::new();
     for child in tag.children(&info.tags) {
         match child.kind {
             TagKind::FormalParameter => {
@@ -1195,7 +1165,7 @@ fn ref_fixup_subroutine_tag(
                 ref_fixup_union_tag(info, unit, dwarf2_types, child)?;
             }
             TagKind::Typedef => {
-                typedefs.push(ref_fixup_typedef_tag(info, unit, dwarf2_types, child)?)
+                ref_fixup_typedef_tag(info, unit, dwarf2_types, child)?;
             }
             TagKind::ArrayType => {
                 ref_fixup_array_tag(info, unit, dwarf2_types, child)?;
@@ -2118,6 +2088,7 @@ fn process_variable_tag(
             (AttributeKind::Member, &AttributeValue::Reference(_key)) => {
                 // Pointer to parent structure, ignore
             }
+            (AttributeKind::Specification, &AttributeValue::Reference(_key)) => {}
             _ => {
                 bail!("Unhandled Variable attribute {:?}", attr);
             }
@@ -2181,6 +2152,17 @@ fn ref_fixup_variable_tag(
                 _,
             ) => {
                 kind = Some(process_type(unit, dwarf2_types, attr, info.e)?);
+            }
+            (AttributeKind::Specification, &AttributeValue::Reference(key)) => {
+                let spec_id = dwarf2_types
+                    .old_new_tag_map
+                    .get(&key)
+                    .cloned()
+                    .ok_or_else(|| anyhow!("Unknown spec"))?;
+                unit.get_mut(new_variable_id).set(
+                    gimli::DW_AT_specification,
+                    gimli::write::AttributeValue::UnitRef(spec_id),
+                );
             }
             _ => {}
         }
