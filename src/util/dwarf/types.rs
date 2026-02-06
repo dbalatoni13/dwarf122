@@ -678,26 +678,14 @@ pub struct MemberSubroutineDefType {
 pub struct SubroutineType {
     pub name: Option<String>,
     pub mangled_name: Option<String>,
-    // pub return_type: Type,
+    pub return_type: Option<Type>,
     pub parameters: Vec<SubroutineParameter>,
     pub var_args: bool,
     pub prototyped: bool,
     pub references: Vec<u32>,
     pub member_of: Option<u32>,
-    pub direct_member_of: Option<u32>,
-    pub variables: Vec<SubroutineVariable>,
     pub inline: bool,
     pub virtual_: bool,
-    pub local: bool,
-    pub labels: Vec<SubroutineLabel>,
-    pub blocks_and_inlines: Vec<SubroutineNode>,
-    pub inner_types: Vec<UserDefinedType>,
-    pub start_address: Option<u32>,
-    pub end_address: Option<u32>,
-    pub const_: bool,
-    pub static_member: bool,
-    pub override_: bool,
-    pub volatile_: bool,
 }
 
 #[derive(Debug, Clone)]

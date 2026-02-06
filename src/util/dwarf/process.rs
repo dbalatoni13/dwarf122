@@ -318,6 +318,7 @@ fn process_structure_tag(
     info: &DwarfInfo,
     unit: &mut gimli::write::Unit,
     parent: gimli::write::UnitEntryId,
+    inside_function: bool,
     dwarf2_types: &mut Dwarf2Types,
     tag: &Tag,
 ) -> Result<StructureType> {
@@ -354,7 +355,7 @@ fn process_structure_tag(
     let mut inner_types = Vec::new();
     let mut typedefs = Vec::new();
 
-    let real_parent = if nested { parent } else { unit.root() };
+    let real_parent = if nested || inside_function { parent } else { unit.root() };
 
     let new_struct_id = unit.add(real_parent, gimli::DW_TAG_structure_type);
     dwarf2_types.old_new_tag_map.insert(tag.key, new_struct_id);
@@ -425,6 +426,7 @@ fn process_structure_tag(
                     info,
                     unit,
                     new_struct_id,
+                    inside_function,
                     dwarf2_types,
                     child,
                 )?))
@@ -488,7 +490,9 @@ fn ref_fixup_structure_tag(
                         // MWCC handles static members as typedefs for whatever reason
                         ref_fixup_variable_tag(info, unit, dwarf2_types, child)?
                     }
-                    _ => ref_fixup_typedef_tag(info, unit, dwarf2_types, child)?,
+                    _ => {
+                        ref_fixup_typedef_tag(info, unit, dwarf2_types, child)?;
+                    }
                 }
             }
             TagKind::Subroutine | TagKind::GlobalSubroutine => {
@@ -889,8 +893,6 @@ fn process_subroutine_tag(
 
     let mut name = None;
     let mut mangled_name = None;
-    // TODO DWARF122
-    // let mut return_type = None;
     let mut prototyped = false;
     let mut parameters = Vec::new();
     let mut var_args = false;
@@ -916,10 +918,7 @@ fn process_subroutine_tag(
                 | AttributeKind::UserDefType
                 | AttributeKind::ModUDType,
                 _,
-            ) => {
-                // TODO DWARF122 types
-                // return_type = Some(process_type(unit, dwarf2_types, attr, info.e)?);
-            }
+            ) => {}
             (AttributeKind::Prototyped, _) => prototyped = true,
             (AttributeKind::LowPc, &AttributeValue::Address(addr)) => {
                 start_address = Some(addr);
@@ -974,67 +973,27 @@ fn process_subroutine_tag(
             }
             (AttributeKind::Inline, _) => inline = true,
             (AttributeKind::Virtual, _) => virtual_ = true,
-            (AttributeKind::Specification, &AttributeValue::Reference(key)) => {
-                let spec_tag = info
-                    .tags
-                    .get(&key)
-                    .ok_or_else(|| anyhow!("Failed to locate specification tag {}", key))?;
-                // Merge attributes from specification tag
-                let spec =
-                    process_subroutine_tag(info, unit, new_subroutine_id, dwarf2_types, spec_tag)?;
-                name = name.or(spec.name);
-                mangled_name = mangled_name.or(spec.mangled_name);
-                // return_type = return_type.or(Some(spec.return_type));
-                prototyped = prototyped || spec.prototyped;
-                parameters.extend(spec.parameters);
-                var_args = var_args || spec.var_args;
-                references.extend(spec.references);
-                member_of = member_of.or(spec.member_of);
-                inline = inline || spec.inline;
-                virtual_ = virtual_ || spec.virtual_;
-            }
+            (AttributeKind::Specification, &AttributeValue::Reference(_key)) => {}
             _ => {
                 bail!("Unhandled SubroutineType attribute {:?}", attr);
             }
         }
     }
 
-    let mut variables = Vec::new();
     let mut labels = Vec::new();
     let mut blocks_and_inlines = Vec::new();
     let mut inner_types = Vec::new();
     let mut typedefs = Vec::new();
     for child in tag.children(&info.tags) {
         match child.kind {
-            // TODO DWARF122
             TagKind::FormalParameter => {
-                //     let param = process_subroutine_parameter_tag(info, unit, dwarf2_types, child)?;
-                //     if !this_pointer_found && param.name.as_deref() == Some("this") {
-                //         let modifiers = &param.kind.modifiers;
-                //         if modifiers.len() >= 3
-                //             && modifiers[0] == Modifier::Const
-                //             && modifiers[2] == Modifier::Const
-                //         {
-                //             const_ = true;
-                //         }
-                //         if modifiers.contains(&Modifier::Volatile) {
-                //             volatile_ = true;
-                //         }
-                //         // This is needed because direct_base differs from member_of in virtual function overrides
-                //         if let TypeKind::UserDefined(key) = param.kind.kind {
-                //             direct_base_key = Some(key);
-                //         }
-                //         this_pointer_found = true;
-                //     }
-                //     // Avoid applying ones that were already in the specification
-                //     if !parameters.iter().any(|p| {
-                //         matches!(
-                //             (p.name.as_ref(), param.name.as_ref()),
-                //             (Some(a), Some(b)) if a == b
-                //         )
-                //     }) {
-                //         parameters.push(param);
-                //     }
+                process_subroutine_parameter_tag(
+                    info,
+                    unit,
+                    new_subroutine_id,
+                    dwarf2_types,
+                    child,
+                )?;
             }
             TagKind::UnspecifiedParameters => var_args = true,
             TagKind::LocalVariable => {
@@ -1046,25 +1005,29 @@ fn process_subroutine_tag(
             }
             TagKind::Label => labels.push(process_subroutine_label_tag(info, child)?),
             TagKind::LexicalBlock => {
-                if let Some(block) =
-                    process_subroutine_block_tag(info, unit, unit.root(), dwarf2_types, child)?
-                {
-                    // TOO DWARF122 parent
-                    blocks_and_inlines.push(SubroutineNode::Block(block));
-                }
-            }
-            TagKind::InlinedSubroutine => blocks_and_inlines.push(SubroutineNode::Inline(
-                process_subroutine_tag(info, unit, new_subroutine_id, dwarf2_types, child)?,
-            )),
-            TagKind::StructureType | TagKind::ClassType => {
-                inner_types.push(UserDefinedType::Structure(process_structure_tag(
+                if let Some(block) = process_subroutine_block_tag(
                     info,
                     unit,
                     new_subroutine_id,
                     dwarf2_types,
                     child,
+                )? {
+                    blocks_and_inlines.push(SubroutineNode::Block(block));
+                }
+            }
+            TagKind::InlinedSubroutine => {
+                process_subroutine_tag(info, unit, new_subroutine_id, dwarf2_types, child)?;
+            }
+            TagKind::StructureType | TagKind::ClassType => {
+                inner_types.push(UserDefinedType::Structure(process_structure_tag(
+                    info,
+                    unit,
+                    new_subroutine_id,
+                    true,
+                    dwarf2_types,
+                    child,
                 )?))
-            } // TODO DWARF122 parent
+            }
             TagKind::EnumerationType => inner_types.push(UserDefinedType::Enumeration(
                 process_enumeration_tag(info, unit, new_subroutine_id, dwarf2_types, child)?,
             )),
@@ -1082,8 +1045,15 @@ fn process_subroutine_tag(
                 dwarf2_types,
                 child,
             )?),
-            TagKind::ArrayType | TagKind::SubroutineType | TagKind::PtrToMemberType => {
+            TagKind::ArrayType => {
+                process_array_tag(info, unit, dwarf2_types, child)?;
+            }
+            TagKind::SubroutineType => {
+                process_subroutine_tag(info, unit, new_subroutine_id, dwarf2_types, child)?;
+            }
+            TagKind::PtrToMemberType => {
                 // Variable type, ignore
+                // TODO DWARF22 might have to parse these to set up types properly, do the compilers emit these inside here at all?
             }
             kind => bail!("Unhandled SubroutineType child {:?}", kind),
         }
@@ -1127,26 +1097,214 @@ fn process_subroutine_tag(
     let subroutine = SubroutineType {
         name,
         mangled_name,
-        // return_type,
+        return_type: None,
         parameters,
         var_args,
         prototyped,
         references,
         member_of,
-        direct_member_of,
-        variables,
         inline,
         virtual_,
-        local,
-        labels,
-        blocks_and_inlines,
-        inner_types,
-        start_address,
-        end_address,
-        const_,
-        static_member,
-        override_,
-        volatile_,
+    };
+    Ok(subroutine)
+}
+
+fn ref_fixup_subroutine_tag(
+    info: &DwarfInfo,
+    unit: &mut gimli::write::Unit,
+    dwarf2_types: &mut Dwarf2Types,
+    tag: &Tag,
+) -> Result<SubroutineType> {
+    let new_subroutine_id = dwarf2_types
+        .old_new_tag_map
+        .get(&tag.key)
+        .cloned()
+        .ok_or_else(|| anyhow!("Unknown subroutine"))?;
+
+    let mut name = None;
+    let mut mangled_name = None;
+    let mut return_type = None;
+    let mut prototyped = false;
+    let mut parameters = Vec::new();
+    let mut var_args = false;
+    let mut references = Vec::new();
+    let mut member_of = None;
+    let mut inline = false;
+    let mut virtual_ = false;
+    // as opposed to a higher base class whose function is beging overridden
+    let mut this_pointer_found = false;
+    let mut direct_base_key = None;
+    let mut const_ = false;
+    let mut volatile_ = false;
+    for attr in &tag.attributes {
+        match (attr.kind, &attr.value) {
+            (AttributeKind::Sibling, _) => {}
+            (AttributeKind::Name, AttributeValue::String(s)) => name = Some(s.clone()),
+            (AttributeKind::MwMangled, AttributeValue::String(s)) => mangled_name = Some(s.clone()),
+            (
+                AttributeKind::FundType
+                | AttributeKind::ModFundType
+                | AttributeKind::UserDefType
+                | AttributeKind::ModUDType,
+                _,
+            ) => {
+                return_type = Some(process_type(unit, dwarf2_types, attr, info.e)?);
+            }
+            (AttributeKind::Prototyped, _) => prototyped = true,
+            (AttributeKind::LowPc, &AttributeValue::Address(addr)) => {}
+            (AttributeKind::HighPc, &AttributeValue::Address(addr)) => {}
+            (AttributeKind::MwGlobalRef, &AttributeValue::Reference(key)) => {
+                references.push(key);
+            }
+            (AttributeKind::MwGlobalRefsBlock, AttributeValue::Block(_)) => {
+                // Global references block
+            }
+            (AttributeKind::ReturnAddr, AttributeValue::Block(_block)) => {
+                // let location = process_variable_location(block)?;
+                // info!("ReturnAddr: {}", location);
+            }
+            (AttributeKind::Member, &AttributeValue::Reference(key)) => {
+                member_of = Some(key);
+            }
+            (AttributeKind::MwPrologueEnd, &AttributeValue::Address(_addr)) => {
+                // Prologue end
+            }
+            (AttributeKind::MwEpilogueStart, &AttributeValue::Address(_addr)) => {
+                // Epilogue start
+            }
+            (
+                AttributeKind::MwRestoreSp
+                | AttributeKind::MwRestoreS0
+                | AttributeKind::MwRestoreS1
+                | AttributeKind::MwRestoreS2
+                | AttributeKind::MwRestoreS3
+                | AttributeKind::MwRestoreS4
+                | AttributeKind::MwRestoreS5
+                | AttributeKind::MwRestoreS6
+                | AttributeKind::MwRestoreS7
+                | AttributeKind::MwRestoreS8
+                | AttributeKind::MwRestoreF20
+                | AttributeKind::MwRestoreF21
+                | AttributeKind::MwRestoreF22
+                | AttributeKind::MwRestoreF23
+                | AttributeKind::MwRestoreF24
+                | AttributeKind::MwRestoreF25
+                | AttributeKind::MwRestoreF26
+                | AttributeKind::MwRestoreF27
+                | AttributeKind::MwRestoreF28
+                | AttributeKind::MwRestoreF29
+                | AttributeKind::MwRestoreF30,
+                AttributeValue::Block(_),
+            ) => {
+                // Restore register
+            }
+            (AttributeKind::Inline, _) => inline = true,
+            (AttributeKind::Virtual, _) => virtual_ = true,
+            (AttributeKind::Specification, &AttributeValue::Reference(key)) => {
+                let spec_tag = info
+                    .tags
+                    .get(&key)
+                    .ok_or_else(|| anyhow!("Failed to locate specification tag {}", key))?;
+                // Merge attributes from specification tag
+                let spec = ref_fixup_subroutine_tag(info, unit, dwarf2_types, spec_tag)?;
+                name = name.or(spec.name);
+                mangled_name = mangled_name.or(spec.mangled_name);
+                return_type = return_type.or(spec.return_type);
+                prototyped = prototyped || spec.prototyped;
+                parameters.extend(spec.parameters);
+                var_args = var_args || spec.var_args;
+                references.extend(spec.references);
+                member_of = member_of.or(spec.member_of);
+                inline = inline || spec.inline;
+                virtual_ = virtual_ || spec.virtual_;
+            }
+            _ => {
+                bail!("Unhandled SubroutineType attribute {:?}", attr);
+            }
+        }
+    }
+
+    let mut blocks_and_inlines = Vec::new();
+    let mut typedefs = Vec::new();
+    for child in tag.children(&info.tags) {
+        match child.kind {
+            TagKind::FormalParameter => {
+                let param = ref_fixup_subroutine_parameter_tag(info, unit, dwarf2_types, child)?;
+                parameters.push(param);
+            }
+            TagKind::UnspecifiedParameters => var_args = true,
+            TagKind::LocalVariable => {
+                // TODO DWARF122
+                // ref_fixup_local_variable_tag(info, unit, dwarf2_types, child)?;
+            }
+            TagKind::GlobalVariable => {
+                // TODO GlobalVariable refs?
+            }
+            TagKind::Label => {
+                // TODO DWARF122 is this needed?
+                // ref_fixup_subroutine_label_tag(info, child)?;
+            }
+            TagKind::LexicalBlock => {
+                if let Some(block) =
+                    process_subroutine_block_tag(info, unit, unit.root(), dwarf2_types, child)?
+                {
+                    blocks_and_inlines.push(SubroutineNode::Block(block));
+                }
+            }
+            TagKind::InlinedSubroutine => blocks_and_inlines.push(SubroutineNode::Inline(
+                ref_fixup_subroutine_tag(info, unit, dwarf2_types, child)?,
+            )),
+            TagKind::StructureType | TagKind::ClassType => {
+                ref_fixup_structure_tag(info, unit, dwarf2_types, child)?;
+            }
+            TagKind::EnumerationType => {}
+            TagKind::UnionType => {
+                ref_fixup_union_tag(info, unit, dwarf2_types, child)?;
+            }
+            TagKind::Typedef => {
+                typedefs.push(ref_fixup_typedef_tag(info, unit, dwarf2_types, child)?)
+            }
+            TagKind::ArrayType => {
+                ref_fixup_array_tag(info, unit, dwarf2_types, child)?;
+            }
+            TagKind::SubroutineType => {
+                ref_fixup_subroutine_tag(info, unit, dwarf2_types, child)?;
+            }
+            TagKind::PtrToMemberType => {
+                // Variable type, ignore
+                // TODO DWARF22 might have to parse these to set up types properly
+            }
+            kind => bail!("Unhandled SubroutineType child {:?}", kind),
+        }
+    }
+
+    let direct_member_of = direct_base_key;
+    let local = tag.kind == TagKind::Subroutine;
+
+    let mut static_member = false;
+    if let Producer::GCC = info.producer {
+        // GCC doesn't retain namespaces, so this is a nice way to determine staticness
+        static_member = member_of.is_some() && !this_pointer_found;
+    }
+    let override_ = virtual_ && member_of != direct_member_of;
+
+    let new_subroutine_tag = unit.get_mut(new_subroutine_id);
+    if let Some(ref return_type) = return_type {
+        new_subroutine_tag
+            .set(gimli::DW_AT_type, gimli::write::AttributeValue::UnitRef(return_type.entry_id));
+    }
+
+    let subroutine = SubroutineType {
+        name,
+        mangled_name,
+        return_type,
+        parameters,
+        var_args,
+        prototyped,
+        references,
+        member_of,
+        inline,
+        virtual_,
     };
     Ok(subroutine)
 }
@@ -1217,19 +1375,21 @@ fn process_subroutine_block_tag(
                 }
             }
             TagKind::InlinedSubroutine => {
-                blocks_and_inlines.push(SubroutineNode::Inline(process_subroutine_tag(
-                    info,
-                    unit,
-                    unit.root(), // TODO DWARF122 pass the block_id here
-                    dwarf2_types,
-                    child,
-                )?));
+                // TODO DWARF122
+                // blocks_and_inlines.push(SubroutineNode::Inline(process_subroutine_tag(
+                //     info,
+                //     unit,
+                //     unit.root(), // TODO DWARF122 pass the block_id here
+                //     dwarf2_types,
+                //     child,
+                // )?));
             }
             TagKind::StructureType | TagKind::ClassType => {
                 inner_types.push(UserDefinedType::Structure(process_structure_tag(
                     info,
                     unit,
                     unit.root(),
+                    true,
                     dwarf2_types,
                     child,
                 )?))
@@ -1278,10 +1438,74 @@ fn process_subroutine_block_tag(
 fn process_subroutine_parameter_tag(
     info: &DwarfInfo,
     unit: &mut gimli::write::Unit,
+    parent: UnitEntryId,
+    dwarf2_types: &mut Dwarf2Types,
+    tag: &Tag,
+) -> Result<()> {
+    ensure!(tag.kind == TagKind::FormalParameter, "{:?} is not a FormalParameter tag", tag.kind);
+
+    let new_parameter_id = unit.add(parent, gimli::DW_TAG_formal_parameter);
+    dwarf2_types.old_new_tag_map.insert(tag.key, new_parameter_id);
+
+    let mut name = None;
+    let mut location = None;
+    for attr in &tag.attributes {
+        match (attr.kind, &attr.value) {
+            (AttributeKind::Sibling, _) => {}
+            (AttributeKind::Name, AttributeValue::String(s)) => name = Some(s.clone()),
+            (
+                AttributeKind::FundType
+                | AttributeKind::ModFundType
+                | AttributeKind::UserDefType
+                | AttributeKind::ModUDType,
+                _,
+            ) => {}
+            (AttributeKind::Location, AttributeValue::Block(block)) => {
+                if !block.is_empty() {
+                    location = Some(process_variable_location(block, tag.data_endian)?);
+                }
+            }
+            (AttributeKind::MwDwarf2Location, AttributeValue::Block(_block)) => {
+                // TODO?
+                // info!("MwDwarf2Location: {:?} in {:?}", block, tag);
+            }
+            (AttributeKind::ConstValueBlock2 | AttributeKind::ConstValueBlock4, _) => {
+                // TODO?
+                // info!("ConstValueBlock: {:?} in {:?}", block, tag);
+            }
+            (AttributeKind::Specification, &AttributeValue::Reference(_key)) => {}
+            _ => bail!("Unhandled SubroutineParameter attribute {:?}", attr),
+        }
+    }
+
+    if let Some(child) = tag.children(&info.tags).first() {
+        bail!("Unhandled SubroutineParameter child {:?}", child.kind);
+    }
+
+    if let Some(ref name) = name {
+        unit.get_mut(new_parameter_id).set(
+            gimli::DW_AT_name,
+            gimli::write::AttributeValue::String(name.clone().into_bytes()),
+        );
+    }
+    // TODO DWARF122 location
+
+    Ok(())
+}
+
+fn ref_fixup_subroutine_parameter_tag(
+    info: &DwarfInfo,
+    unit: &mut gimli::write::Unit,
     dwarf2_types: &mut Dwarf2Types,
     tag: &Tag,
 ) -> Result<SubroutineParameter> {
     ensure!(tag.kind == TagKind::FormalParameter, "{:?} is not a FormalParameter tag", tag.kind);
+
+    let new_parameter_id = dwarf2_types
+        .old_new_tag_map
+        .get(&tag.key)
+        .cloned()
+        .ok_or_else(|| anyhow!("Unknown parameter tag"))?;
 
     let mut name = None;
     let mut kind = None;
@@ -1297,8 +1521,7 @@ fn process_subroutine_parameter_tag(
                 | AttributeKind::ModUDType,
                 _,
             ) => {
-                // TODO DWARF122 types
-                // kind = Some(process_type(unit, dwarf2_types, attr, info.e)?);
+                kind = Some(process_type(unit, dwarf2_types, attr, info.e)?);
             }
             (AttributeKind::Location, AttributeValue::Block(block)) => {
                 if !block.is_empty() {
@@ -1319,7 +1542,7 @@ fn process_subroutine_parameter_tag(
                     .get(&key)
                     .ok_or_else(|| anyhow!("Failed to locate specification tag {}", key))?;
                 // Merge attributes from specification tag
-                let spec = process_subroutine_parameter_tag(info, unit, dwarf2_types, spec_tag)?;
+                let spec = ref_fixup_subroutine_parameter_tag(info, unit, dwarf2_types, spec_tag)?;
                 name = name.or(spec.name);
                 kind = kind.or(Some(spec.kind));
                 location = location.or(spec.location);
@@ -1333,6 +1556,10 @@ fn process_subroutine_parameter_tag(
     }
 
     let kind = kind.ok_or_else(|| anyhow!("SubroutineParameter without type: {:?}", tag))?;
+
+    unit.get_mut(new_parameter_id)
+        .set(gimli::DW_AT_type, gimli::write::AttributeValue::UnitRef(kind.entry_id));
+
     Ok(SubroutineParameter { name, kind, location })
 }
 
@@ -1452,7 +1679,7 @@ pub fn ud_type(
             Ok(UserDefinedType::Array(process_array_tag(info, unit, dwarf2_types, tag)?))
         }
         TagKind::StructureType | TagKind::ClassType => Ok(UserDefinedType::Structure(
-            process_structure_tag(info, unit, unit.root(), dwarf2_types, tag)?,
+            process_structure_tag(info, unit, unit.root(), false, dwarf2_types, tag)?,
         )),
         TagKind::EnumerationType => Ok(UserDefinedType::Enumeration(process_enumeration_tag(
             info,
@@ -1535,7 +1762,7 @@ pub fn process_type(
                 .old_new_tag_map
                 .get(&key)
                 .cloned()
-                .ok_or_else(|| anyhow!("Unknown user type"))?;
+                .ok_or_else(|| anyhow!("Unknown user type."))?;
             Ok(Type { kind: TypeKind::UserDefined(key), modifiers: vec![], entry_id })
         }
         (AttributeKind::ModUDType, AttributeValue::Block(ops)) => {
@@ -1545,7 +1772,7 @@ pub fn process_type(
                 .old_new_tag_map
                 .get(&ud_ref)
                 .cloned()
-                .ok_or_else(|| anyhow!("Unknown user type"))?;
+                .ok_or_else(|| anyhow!("Unknown user type.."))?;
             let modified_type_id =
                 create_or_get_modified_type(unit, dwarf2_types, entry_id, &modifiers)?;
             Ok(Type { kind: TypeKind::UserDefined(ud_ref), modifiers, entry_id: modified_type_id })
@@ -1749,8 +1976,11 @@ pub fn ref_fixup_cu_tag(
 ) -> Result<()> {
     match tag.kind {
         // TODO DWARF122 subroutine, ptrtomember
+        TagKind::SubroutineType | TagKind::GlobalSubroutine | TagKind::Subroutine => {
+            ref_fixup_subroutine_tag(info, unit, dwarf2_types, tag).map(|_tag| ())
+        }
         TagKind::ArrayType => ref_fixup_array_tag(info, unit, dwarf2_types, tag),
-        TagKind::Typedef => ref_fixup_typedef_tag(info, unit, dwarf2_types, tag),
+        TagKind::Typedef => ref_fixup_typedef_tag(info, unit, dwarf2_types, tag).map(|_tag| ()),
         TagKind::UnionType => ref_fixup_union_tag(info, unit, dwarf2_types, tag),
         TagKind::GlobalVariable | TagKind::LocalVariable => {
             ref_fixup_variable_tag(info, unit, dwarf2_types, tag)
@@ -1801,9 +2031,7 @@ fn process_typedef_tag(
             (AttributeKind::Member, _) => {
                 // can be ignored for now
             }
-            (AttributeKind::Specification, &AttributeValue::Reference(_key)) => {
-                // TODO DWARF122 figure out how to do this
-            }
+            (AttributeKind::Specification, &AttributeValue::Reference(_key)) => {}
             _ => {
                 bail!("Unhandled Typedef attribute {:?}", attr);
             }
@@ -1828,12 +2056,14 @@ fn ref_fixup_typedef_tag(
     unit: &mut gimli::write::Unit,
     dwarf2_types: &mut Dwarf2Types,
     tag: &Tag,
-) -> Result<()> {
+) -> Result<TypedefTag> {
     ensure!(tag.kind == TagKind::Typedef, "{:?} is not a typedef tag", tag.kind);
 
+    let mut name = None;
     let mut kind = None;
     for attr in &tag.attributes {
         match (attr.kind, &attr.value) {
+            (AttributeKind::Name, AttributeValue::String(s)) => name = Some(s.clone()),
             (
                 AttributeKind::FundType
                 | AttributeKind::ModFundType
@@ -1844,16 +2074,14 @@ fn ref_fixup_typedef_tag(
                 kind = Some(process_type(unit, dwarf2_types, attr, info.e)?);
             }
             (AttributeKind::Specification, &AttributeValue::Reference(key)) => {
-                // TODO DWARF122 figure out how to do this
                 let spec_tag = info
                     .tags
                     .get(&key)
                     .ok_or_else(|| anyhow!("Failed to locate specification tag {}", key))?;
                 // Merge attributes from specification tag
-                // TODO DWARF122
-                // let spec = process_typedef_tag(info, unit, dwarf2_types, spec_tag)?;
-                // name = name.or(Some(spec.name));
-                // kind = kind.or(Some(spec.kind));
+                let spec = ref_fixup_typedef_tag(info, unit, dwarf2_types, spec_tag)?;
+                name = name.or(Some(spec.name));
+                kind = kind.or(Some(spec.kind));
             }
             _ => {}
         }
@@ -1863,6 +2091,7 @@ fn ref_fixup_typedef_tag(
         bail!("Unhandled Typedef child {:?}", child.kind);
     }
 
+    let name = name.ok_or_else(|| anyhow!("Typedef without Name: {:?}", tag))?;
     let kind = kind.ok_or_else(|| anyhow!("Typedef without Type: {:?}", tag))?;
 
     let new_typedef_id = dwarf2_types
@@ -1874,7 +2103,7 @@ fn ref_fixup_typedef_tag(
     unit.get_mut(new_typedef_id)
         .set(gimli::DW_AT_type, gimli::write::AttributeValue::UnitRef(kind.entry_id));
 
-    Ok(())
+    Ok(TypedefTag { name, kind })
 }
 
 fn process_variable_tag(
