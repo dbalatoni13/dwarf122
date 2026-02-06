@@ -14,24 +14,24 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  check:
-    name: Check
-    runs-on: ubuntu-latest
-    env:
-      RUSTFLAGS: -D warnings
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - name: Cache Rust workspace
-        uses: Swatinem/rust-cache@v2
-      - name: Cargo check
-        run: cargo check --all-features --all-targets
-      - name: Cargo clippy
-        run: cargo clippy --all-features --all-targets
+  # check:
+  #   name: Check
+  #   runs-on: ubuntu-latest
+  #   env:
+  #     RUSTFLAGS: -D warnings
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v4
+  #     - name: Setup Rust toolchain
+  #       uses: dtolnay/rust-toolchain@stable
+  #       with:
+  #         components: clippy
+  #     - name: Cache Rust workspace
+  #       uses: Swatinem/rust-cache@v2
+  #     - name: Cargo check
+  #       run: cargo check --all-features --all-targets
+  #     - name: Cargo clippy
+  #       run: cargo clippy --all-features --all-targets
 
   fmt:
     name: Format

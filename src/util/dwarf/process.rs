@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
-use gimli::write::UnitEntryId;
+use gimli::write::{Expression, UnitEntryId};
 use num_enum::TryFromPrimitive;
 
 use crate::{
@@ -69,28 +69,33 @@ pub const fn register_name(reg: u32) -> &'static str {
     }
 }
 
-pub fn process_variable_location(block: &[u8], e: Endian) -> Result<String> {
+pub fn process_variable_location(block: &[u8], e: Endian) -> Result<Expression> {
+    let mut expr = gimli::write::Expression::new();
     if block.len() == 5
         && (block[0] == LocationOp::Register as u8
             || block[0] == LocationOp::BaseRegister as u8
             || block[0] == LocationOp::MwFpReg as u8)
     {
-        Ok(register_name(u32::from_bytes(*array_ref!(block, 1, 4), e)).to_string())
+        expr.op_reg(gimli::Register(u32::from_bytes(*array_ref!(block, 1, 4), e) as u16));
     } else if block.len() == 5 && block[0] == LocationOp::Address as u8 {
-        Ok(format!("@ {:#010X}", u32::from_bytes(*array_ref!(block, 1, 4), e)))
+        expr.op_addr(gimli::write::Address::Constant(
+            u32::from_bytes(*array_ref!(block, 1, 4), e) as u64
+        ));
     } else if block.len() == 11
         && block[0] == LocationOp::BaseRegister as u8
         && block[5] == LocationOp::Const as u8
         && block[10] == LocationOp::Add as u8
     {
-        Ok(format!(
-            "{}+{:#X}",
-            register_name(u32::from_bytes(*array_ref!(block, 1, 4), e)),
-            u32::from_bytes(*array_ref!(block, 6, 4), e)
-        ))
+        // TODO is it i32 or u32?
+        expr.op_breg(
+            gimli::Register(u32::from_bytes(*array_ref!(block, 1, 4), e) as u16),
+            i32::from_bytes(*array_ref!(block, 6, 4), e) as i64,
+        );
     } else {
-        Err(anyhow!("Unhandled location data {:?}, expected variable loc", block))
+        return Err(anyhow!("Unhandled location data {:?}, expected variable loc", block));
     }
+
+    Ok(expr)
 }
 
 fn process_inheritance_tag(
@@ -997,8 +1002,7 @@ fn process_subroutine_tag(
             }
             TagKind::UnspecifiedParameters => var_args = true,
             TagKind::LocalVariable => {
-                // TODO DWARF122
-                // variables.push(process_local_variable_tag(info, unit, dwarf2_types, child)?)
+                process_local_variable_tag(info, unit, new_subroutine_id, dwarf2_types, child)?;
             }
             TagKind::GlobalVariable => {
                 // TODO GlobalVariable refs?
@@ -1234,8 +1238,7 @@ fn ref_fixup_subroutine_tag(
             }
             TagKind::UnspecifiedParameters => var_args = true,
             TagKind::LocalVariable => {
-                // TODO DWARF122
-                // ref_fixup_local_variable_tag(info, unit, dwarf2_types, child)?;
+                ref_fixup_local_variable_tag(info, unit, dwarf2_types, child)?;
             }
             TagKind::GlobalVariable => {
                 // TODO GlobalVariable refs?
@@ -1488,7 +1491,10 @@ fn process_subroutine_parameter_tag(
             gimli::write::AttributeValue::String(name.clone().into_bytes()),
         );
     }
-    // TODO DWARF122 location
+    if let Some(location) = location {
+        unit.get_mut(new_parameter_id)
+            .set(gimli::DW_AT_location, gimli::write::AttributeValue::Exprloc(location));
+    }
 
     Ok(())
 }
@@ -1566,10 +1572,77 @@ fn ref_fixup_subroutine_parameter_tag(
 fn process_local_variable_tag(
     info: &DwarfInfo,
     unit: &mut gimli::write::Unit,
+    parent: UnitEntryId,
+    dwarf2_types: &mut Dwarf2Types,
+    tag: &Tag,
+) -> Result<()> {
+    ensure!(tag.kind == TagKind::LocalVariable, "{:?} is not a LocalVariable tag", tag.kind);
+
+    let new_local_var_id = unit.add(parent, gimli::DW_TAG_variable);
+    dwarf2_types.old_new_tag_map.insert(tag.key, new_local_var_id);
+
+    let mut mangled_name = None;
+    let mut name = None;
+    let mut location = None;
+    for attr in &tag.attributes {
+        match (attr.kind, &attr.value) {
+            (AttributeKind::Sibling, _) => {}
+            (AttributeKind::Name, AttributeValue::String(s)) => name = Some(s.clone()),
+            (AttributeKind::MwMangled, AttributeValue::String(s)) => mangled_name = Some(s.clone()),
+            (
+                AttributeKind::FundType
+                | AttributeKind::ModFundType
+                | AttributeKind::UserDefType
+                | AttributeKind::ModUDType,
+                _,
+            ) => {}
+            (AttributeKind::Location, AttributeValue::Block(block)) => {
+                if !block.is_empty() {
+                    location = Some(process_variable_location(block, tag.data_endian)?);
+                }
+            }
+            (AttributeKind::MwDwarf2Location, AttributeValue::Block(_block)) => {
+                // TODO?
+                // info!("MwDwarf2Location: {:?} in {:?}", block, tag);
+            }
+            (AttributeKind::Specification, &AttributeValue::Reference(_key)) => {}
+            _ => {
+                bail!("Unhandled LocalVariable attribute {:?}", attr);
+            }
+        }
+    }
+
+    if let Some(child) = tag.children(&info.tags).first() {
+        bail!("Unhandled LocalVariable child {:?}", child.kind);
+    }
+
+    if let Some(ref name) = name {
+        unit.get_mut(new_local_var_id).set(
+            gimli::DW_AT_name,
+            gimli::write::AttributeValue::String(name.clone().into_bytes()),
+        );
+    }
+    if let Some(location) = location {
+        unit.get_mut(new_local_var_id)
+            .set(gimli::DW_AT_location, gimli::write::AttributeValue::Exprloc(location));
+    }
+
+    Ok(())
+}
+
+fn ref_fixup_local_variable_tag(
+    info: &DwarfInfo,
+    unit: &mut gimli::write::Unit,
     dwarf2_types: &mut Dwarf2Types,
     tag: &Tag,
 ) -> Result<SubroutineVariable> {
     ensure!(tag.kind == TagKind::LocalVariable, "{:?} is not a LocalVariable tag", tag.kind);
+
+    let new_parameter_id = dwarf2_types
+        .old_new_tag_map
+        .get(&tag.key)
+        .cloned()
+        .ok_or_else(|| anyhow!("Unknown local variable"))?;
 
     let mut mangled_name = None;
     let mut name = None;
@@ -1587,8 +1660,7 @@ fn process_local_variable_tag(
                 | AttributeKind::ModUDType,
                 _,
             ) => {
-                // TODO DWARF122 types
-                // kind = Some(process_type(unit, dwarf2_types, attr, info.e)?);
+                kind = Some(process_type(unit, dwarf2_types, attr, info.e)?);
             }
             (AttributeKind::Location, AttributeValue::Block(block)) => {
                 if !block.is_empty() {
@@ -1600,16 +1672,15 @@ fn process_local_variable_tag(
                 // info!("MwDwarf2Location: {:?} in {:?}", block, tag);
             }
             (AttributeKind::Specification, &AttributeValue::Reference(key)) => {
-                // TODO DWARF122
-                // let spec_tag = info
-                //     .tags
-                //     .get(&key)
-                //     .ok_or_else(|| anyhow!("Failed to locate specification tag {}", key))?;
-                // // Merge attributes from specification tag
-                // let spec = process_local_variable_tag(info, unit, dwarf2_types, spec_tag)?;
-                // name = name.or(spec.name);
-                // kind = kind.or(Some(spec.kind));
-                // location = location.or(spec.location);
+                let spec_tag = info
+                    .tags
+                    .get(&key)
+                    .ok_or_else(|| anyhow!("Failed to locate specification tag {}", key))?;
+                // Merge attributes from specification tag
+                let spec = ref_fixup_local_variable_tag(info, unit, dwarf2_types, spec_tag)?;
+                name = name.or(spec.name);
+                kind = kind.or(Some(spec.kind));
+                location = location.or(spec.location);
             }
             _ => {
                 bail!("Unhandled LocalVariable attribute {:?}", attr);
@@ -1622,6 +1693,10 @@ fn process_local_variable_tag(
     }
 
     let kind = kind.ok_or_else(|| anyhow!("LocalVariable without type: {:?}", tag))?;
+
+    unit.get_mut(new_parameter_id)
+        .set(gimli::DW_AT_type, gimli::write::AttributeValue::UnitRef(kind.entry_id));
+
     Ok(SubroutineVariable { name, mangled_name, kind, location })
 }
 
@@ -2165,12 +2240,9 @@ fn process_variable_tag(
         );
     }
     if let Some(address) = address {
-        // TODO local variables
-        if !local {
-            let mut expr = gimli::write::Expression::new();
-            expr.op_addr(gimli::write::Address::Constant(address as u64));
-            global_var.set(gimli::DW_AT_location, gimli::write::AttributeValue::Exprloc(expr));
-        }
+        let mut expr = gimli::write::Expression::new();
+        expr.op_addr(gimli::write::Address::Constant(address as u64));
+        global_var.set(gimli::DW_AT_location, gimli::write::AttributeValue::Exprloc(expr));
     }
 
     Ok(VariableTag { name, mangled_name, address, local })

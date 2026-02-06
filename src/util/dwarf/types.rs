@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
-use gimli::write::UnitEntryId;
+use gimli::write::{Expression, UnitEntryId};
 use num_enum::{IntoPrimitive, TryFromPrimitive, TryFromPrimitiveError};
 
 use crate::{
@@ -620,7 +620,7 @@ pub struct UnionType {
 pub struct SubroutineParameter {
     pub name: Option<String>,
     pub kind: Type,
-    pub location: Option<String>,
+    pub location: Option<Expression>,
 }
 
 #[derive(Debug, Clone)]
@@ -628,7 +628,7 @@ pub struct SubroutineVariable {
     pub name: Option<String>,
     pub mangled_name: Option<String>,
     pub kind: Type,
-    pub location: Option<String>,
+    pub location: Option<Expression>,
 }
 
 #[derive(Debug, Clone)]
