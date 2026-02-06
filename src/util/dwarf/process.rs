@@ -243,17 +243,12 @@ fn process_structure_member_tag(
                 | AttributeKind::UserDefType
                 | AttributeKind::ModUDType,
                 _,
-            ) => {
-                // TODO DWARF122 types
-                // member_type = Some(process_type(unit, dwarf2_types, attr, info.e)?);
-            }
+            ) => {}
             (AttributeKind::Location, AttributeValue::Block(block)) => {
                 let offs = process_offset(block, info.e)?;
                 offset = Some(offs);
-                unit.get_mut(new_member_id).set(
-                    gimli::DW_AT_data_member_location,
-                    gimli::write::AttributeValue::Data4(offs),
-                );
+                unit.get_mut(new_member_id)
+                    .set(gimli::DW_AT_data_member_location, unsigned_dwarf_value(offs));
             }
             (AttributeKind::ByteSize, &AttributeValue::Data4(value)) => byte_size = Some(value),
             (AttributeKind::BitSize, &AttributeValue::Data4(value)) => bit_size = Some(value),
@@ -401,19 +396,14 @@ fn process_structure_tag(
                             child,
                         )?)
                     }
-                    Producer::GCC => {
-                        // GCC generates a typedef in templated structs with the name of the template
-                        // Let's filter it out to not confuse the user
-                        let td = process_typedef_tag(info, unit, dwarf2_types, child)?;
-                        let is_template = name
-                            .as_deref()
-                            .is_some_and(|n| n.starts_with(&format!("{}<", td.name)));
-                        if !is_template {
-                            typedefs.push(td);
-                        }
-                    }
                     _ => {
-                        typedefs.push(process_typedef_tag(info, unit, dwarf2_types, child)?);
+                        typedefs.push(process_typedef_tag(
+                            info,
+                            unit,
+                            new_struct_id,
+                            dwarf2_types,
+                            child,
+                        )?);
                     }
                 }
             }
@@ -468,7 +458,6 @@ fn process_structure_tag(
         static_members,
         bases,
         inner_types,
-        typedefs,
     })
 }
 
@@ -493,28 +482,14 @@ fn ref_fixup_structure_tag(
                 ref_fixup_structure_member_tag(info, unit, dwarf2_types, child)?;
             }
             TagKind::Typedef => {
-                // TODO DWARF122
-                // match info.producer {
-                //     Producer::MWCC => {
-                //         // TODO handle visibility
-                //         // MWCC handles static members as typedefs for whatever reason
-                //         static_members.push(ref_fixup_variable_tag(info, unit, dwarf2_types, child)?)
-                //     }
-                //     Producer::GCC => {
-                //         // GCC generates a typedef in templated structs with the name of the template
-                //         // Let's filter it out to not confuse the user
-                //         let td = process_typedef_tag(info, unit, dwarf2_types, child)?;
-                //         let is_template = name
-                //             .as_deref()
-                //             .is_some_and(|n| n.starts_with(&format!("{}<", td.name)));
-                //         if !is_template {
-                //             typedefs.push(td);
-                //         }
-                //     }
-                //     _ => {
-                //         typedefs.push(process_typedef_tag(info, unit, dwarf2_types, child)?);
-                //     }
-                // }
+                match info.producer {
+                    Producer::MWCC => {
+                        // TODO handle visibility
+                        // MWCC handles static members as typedefs for whatever reason
+                        ref_fixup_variable_tag(info, unit, dwarf2_types, child)?
+                    }
+                    _ => ref_fixup_typedef_tag(info, unit, dwarf2_types, child)?,
+                }
             }
             TagKind::Subroutine | TagKind::GlobalSubroutine => {
                 // TODO
@@ -804,10 +779,8 @@ fn process_enumeration_tag(
             gimli::DW_AT_name,
             gimli::write::AttributeValue::String(member.name.clone().into_bytes()),
         );
-        unit.get_mut(enumerator).set(
-            gimli::DW_AT_const_value,
-            gimli::write::AttributeValue::Data4(member.value as u32),
-        );
+        unit.get_mut(enumerator)
+            .set(gimli::DW_AT_const_value, unsigned_dwarf_value(member.value as u32));
     }
 
     Ok(EnumerationType { name, byte_size, members })
@@ -1102,9 +1075,13 @@ fn process_subroutine_tag(
                 dwarf2_types,
                 child,
             )?)),
-            TagKind::Typedef => {
-                typedefs.push(process_typedef_tag(info, unit, dwarf2_types, child)?)
-            }
+            TagKind::Typedef => typedefs.push(process_typedef_tag(
+                info,
+                unit,
+                new_subroutine_id,
+                dwarf2_types,
+                child,
+            )?),
             TagKind::ArrayType | TagKind::SubroutineType | TagKind::PtrToMemberType => {
                 // Variable type, ignore
             }
@@ -1164,7 +1141,6 @@ fn process_subroutine_tag(
         labels,
         blocks_and_inlines,
         inner_types,
-        typedefs,
         start_address,
         end_address,
         const_,
@@ -1223,7 +1199,6 @@ fn process_subroutine_block_tag(
     let mut variables = Vec::new();
     let mut blocks_and_inlines = Vec::new();
     let mut inner_types = Vec::new();
-    let mut typedefs = Vec::new();
     for child in tag.children(&info.tags) {
         match child.kind {
             TagKind::LocalVariable => {
@@ -1280,7 +1255,8 @@ fn process_subroutine_block_tag(
                 )?))
             }
             TagKind::Typedef => {
-                typedefs.push(process_typedef_tag(info, unit, dwarf2_types, child)?);
+                // TODO DWARF122 pass parent
+                process_typedef_tag(info, unit, unit.root(), dwarf2_types, child)?
             }
             TagKind::ArrayType | TagKind::SubroutineType | TagKind::PtrToMemberType => {
                 // Variable type, ignore
@@ -1296,7 +1272,6 @@ fn process_subroutine_block_tag(
         variables,
         blocks_and_inlines,
         inner_types,
-        typedefs,
     }))
 }
 
@@ -1746,7 +1721,7 @@ pub fn process_cu_tag(
 ) -> Result<TagType> {
     match tag.kind {
         TagKind::Typedef => {
-            Ok(TagType::Typedef(process_typedef_tag(info, unit, dwarf2_types, tag)?))
+            Ok(TagType::Typedef(process_typedef_tag(info, unit, unit.root(), dwarf2_types, tag)?))
         }
         TagKind::GlobalVariable | TagKind::LocalVariable => {
             Ok(TagType::Variable(process_variable_tag(info, unit, unit.root(), dwarf2_types, tag)?))
@@ -1777,6 +1752,9 @@ pub fn ref_fixup_cu_tag(
         TagKind::ArrayType => {
             let _ = ref_fixup_array_tag(info, unit, dwarf2_types, tag);
         }
+        TagKind::Typedef => {
+            let _ = ref_fixup_typedef_tag(info, unit, dwarf2_types, tag);
+        }
         TagKind::UnionType => {
             let _ = ref_fixup_union_tag(info, unit, dwarf2_types, tag);
         }
@@ -1802,13 +1780,17 @@ pub fn should_skip_tag(tag_type: &TagType, is_erased: bool) -> bool {
 fn process_typedef_tag(
     info: &DwarfInfo,
     unit: &mut gimli::write::Unit,
+    parent: gimli::write::UnitEntryId,
     dwarf2_types: &mut Dwarf2Types,
     tag: &Tag,
-) -> Result<TypedefTag> {
+) -> Result<()> {
     ensure!(tag.kind == TagKind::Typedef, "{:?} is not a typedef tag", tag.kind);
 
+    let new_typedef_id = unit.add(parent, gimli::DW_TAG_typedef);
+    dwarf2_types.old_new_tag_map.insert(tag.key, new_typedef_id);
+    let new_typedef_tag = unit.get_mut(new_typedef_id);
+
     let mut name = None;
-    let mut kind = None;
     for attr in &tag.attributes {
         match (attr.kind, &attr.value) {
             (AttributeKind::Sibling, _) => {}
@@ -1819,23 +1801,11 @@ fn process_typedef_tag(
                 | AttributeKind::UserDefType
                 | AttributeKind::ModUDType,
                 _,
-            ) => {
-                // TODO DWARF122 types
-                // kind = Some(process_type(unit, dwarf2_types, attr, info.e)?);
-            }
+            ) => {}
             (AttributeKind::Member, _) => {
                 // can be ignored for now
             }
-            (AttributeKind::Specification, &AttributeValue::Reference(key)) => {
-                let spec_tag = info
-                    .tags
-                    .get(&key)
-                    .ok_or_else(|| anyhow!("Failed to locate specification tag {}", key))?;
-                // Merge attributes from specification tag
-                let spec = process_typedef_tag(info, unit, dwarf2_types, spec_tag)?;
-                name = name.or(Some(spec.name));
-                kind = kind.or(Some(spec.kind));
-            }
+            (AttributeKind::Specification, &AttributeValue::Reference(_key)) => {}
             _ => {
                 bail!("Unhandled Typedef attribute {:?}", attr);
             }
@@ -1847,8 +1817,65 @@ fn process_typedef_tag(
     }
 
     let name = name.ok_or_else(|| anyhow!("Typedef without Name: {:?}", tag))?;
+
+    new_typedef_tag
+        .set(gimli::DW_AT_name, gimli::write::AttributeValue::String(name.clone().into_bytes()));
+
+    Ok(())
+}
+
+// TODO DWARF122 call this in the fixup of subroutines and blocks
+fn ref_fixup_typedef_tag(
+    info: &DwarfInfo,
+    unit: &mut gimli::write::Unit,
+    dwarf2_types: &mut Dwarf2Types,
+    tag: &Tag,
+) -> Result<()> {
+    ensure!(tag.kind == TagKind::Typedef, "{:?} is not a typedef tag", tag.kind);
+
+    let mut kind = None;
+    for attr in &tag.attributes {
+        match (attr.kind, &attr.value) {
+            (
+                AttributeKind::FundType
+                | AttributeKind::ModFundType
+                | AttributeKind::UserDefType
+                | AttributeKind::ModUDType,
+                _,
+            ) => {
+                kind = Some(process_type(unit, dwarf2_types, attr, info.e)?);
+            }
+            (AttributeKind::Specification, &AttributeValue::Reference(key)) => {
+                let spec_tag = info
+                    .tags
+                    .get(&key)
+                    .ok_or_else(|| anyhow!("Failed to locate specification tag {}", key))?;
+                // Merge attributes from specification tag
+                // TODO DWARF122
+                // let spec = process_typedef_tag(info, unit, dwarf2_types, spec_tag)?;
+                // name = name.or(Some(spec.name));
+                // kind = kind.or(Some(spec.kind));
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(child) = tag.children(&info.tags).first() {
+        bail!("Unhandled Typedef child {:?}", child.kind);
+    }
+
     let kind = kind.ok_or_else(|| anyhow!("Typedef without Type: {:?}", tag))?;
-    Ok(TypedefTag { name, kind })
+
+    let new_typedef_id = dwarf2_types
+        .old_new_tag_map
+        .get(&tag.key)
+        .cloned()
+        .ok_or_else(|| anyhow!("Unknown typedef"))?;
+
+    unit.get_mut(new_typedef_id)
+        .set(gimli::DW_AT_type, gimli::write::AttributeValue::UnitRef(kind.entry_id));
+
+    Ok(())
 }
 
 fn process_variable_tag(

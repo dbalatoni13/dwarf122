@@ -36,13 +36,13 @@ pub struct Args {
 #[derive(FromArgs, PartialEq, Debug)]
 #[argp(subcommand)]
 enum SubCommand {
-    Dump(DumpArgs),
+    Convert(ConvertArgs),
 }
 
 #[derive(FromArgs, PartialEq, Eq, Debug)]
-/// Dumps DWARF 1.1 info from an object or archive.
+/// Converts DWARF 1.1 info of an object into DWARF 2+.
 #[argp(subcommand, name = "dump")]
-pub struct DumpArgs {
+pub struct ConvertArgs {
     #[argp(positional, from_str_fn(native_path))]
     /// Input object. (ELF or archive)
     in_file: Utf8NativePathBuf,
@@ -60,11 +60,11 @@ pub struct DumpArgs {
 
 pub fn run(args: Args) -> Result<()> {
     match args.command {
-        SubCommand::Dump(c_args) => dump(c_args),
+        SubCommand::Convert(c_args) => convert(c_args),
     }
 }
 
-fn dump(args: DumpArgs) -> Result<()> {
+fn convert(args: ConvertArgs) -> Result<()> {
     // Load syntect
     let theme_set: ThemeSet =
         syntect::dumps::from_binary(include_bytes!("../../assets/syntax/default.themedump"));
@@ -134,7 +134,7 @@ fn dump(args: DumpArgs) -> Result<()> {
 }
 
 fn dump_debug_section<W>(
-    args: &DumpArgs,
+    args: &ConvertArgs,
     w: &mut W,
     obj_file: &object::File<'_>,
     debug_section: Section,

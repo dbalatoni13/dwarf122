@@ -579,7 +579,6 @@ pub struct StructureType {
     pub static_members: Vec<VariableTag>,
     pub bases: Vec<StructureBase>,
     pub inner_types: Vec<UserDefinedType>,
-    pub typedefs: Vec<TypedefTag>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -646,7 +645,6 @@ pub struct SubroutineBlock {
     pub variables: Vec<SubroutineVariable>,
     pub blocks_and_inlines: Vec<SubroutineNode>,
     pub inner_types: Vec<UserDefinedType>,
-    pub typedefs: Vec<TypedefTag>,
 }
 
 #[derive(Debug, Clone)]
@@ -694,7 +692,6 @@ pub struct SubroutineType {
     pub labels: Vec<SubroutineLabel>,
     pub blocks_and_inlines: Vec<SubroutineNode>,
     pub inner_types: Vec<UserDefinedType>,
-    pub typedefs: Vec<TypedefTag>,
     pub start_address: Option<u32>,
     pub end_address: Option<u32>,
     pub const_: bool,
@@ -736,7 +733,7 @@ pub struct TypedefTag {
 #[derive(Debug, Clone)]
 pub enum TagType {
     Variable(VariableTag),
-    Typedef(TypedefTag),
+    Typedef(()),
     UserDefined(Box<UserDefinedType>),
 }
 
