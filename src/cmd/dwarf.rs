@@ -20,11 +20,7 @@ use typed_path::Utf8NativePathBuf;
 
 use crate::{
     util::{
-        dwarf::{
-            AttributeKind, Dwarf2Types, TagKind, TypedefMap, build_fundemantal_typemap, parse_producer, process_compile_unit, process_cu_tag, process_overlay_branch, read_debug_section, ref_fixup_cu_tag, should_skip_tag
-        },
-        file::buf_writer,
-        path::native_path,
+        dwarf::{io::{parse_producer, read_debug_section}, process::{build_fundemantal_typemap, process_compile_unit, process_cu_tag, process_overlay_branch, ref_fixup_cu_tag, should_skip_tag}, types::{AttributeKind, Dwarf2Types, TagKind, TypedefMap}}, file::buf_writer, path::native_path
     },
     vfs::open_file,
 };
