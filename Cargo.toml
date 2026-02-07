@@ -38,7 +38,7 @@ log = "0.4"
 memmap2 = "0.9"
 nodtool = "1.4"
 num_enum = "0.7"
-object = { version = "0.37.1", features = ["read_core", "std", "elf", "write_std", "build"], default-features = false }
+object = { version = "0.38.1", features = ["read_core", "std", "elf", "write_std", "build"], default-features = false }
 owo-colors = { version = "4.1", features = ["supports-colors"] }
 sha-1 = "0.10"
 supports-color = "3.0"

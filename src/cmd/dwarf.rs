@@ -1,6 +1,6 @@
 use std::{
     collections::{btree_map, BTreeMap, HashMap},
-    fs::{self},
+    fs::File,
     io::{stdout, Cursor, Read, Write},
     ops::Bound::{Excluded, Unbounded},
     str::from_utf8,
@@ -10,7 +10,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use argp::FromArgs;
 use gimli::write::Writer;
 use object::{
-    elf, Object, ObjectSection, ObjectSymbol, RelocationFlags, RelocationTarget, Section,
+    elf, write::StreamingBuffer, Object, ObjectSection, ObjectSymbol, RelocationFlags,
+    RelocationTarget, Section,
 };
 use syntect::{
     highlighting::{Color, HighlightIterator, HighlightState, Highlighter, Theme, ThemeSet},
@@ -112,15 +113,15 @@ fn convert(args: ConvertArgs) -> Result<()> {
                 let name = name.rsplit_once('/').map(|(_, b)| b).unwrap_or(&name);
                 let file_path = out_path.join(format!("{name}.txt"));
                 let mut file = buf_writer(&file_path)?;
-                convert_debug_section(&args, &mut file, &obj_file, debug_section)?;
+                convert_debug_section(&args, &mut file, &obj_file, &data, debug_section)?;
                 file.flush()?;
             } else if args.no_color {
                 println!("\n// File {name}:");
-                convert_debug_section(&args, &mut stdout(), &obj_file, debug_section)?;
+                convert_debug_section(&args, &mut stdout(), &obj_file, &data, debug_section)?;
             } else {
                 let mut writer = HighlightWriter::new(syntax_set.clone(), syntax.clone(), theme);
                 writeln!(writer, "\n// File {name}:")?;
-                convert_debug_section(&args, &mut writer, &obj_file, debug_section)?;
+                convert_debug_section(&args, &mut writer, &obj_file, &data, debug_section)?;
             }
         }
     } else {
@@ -130,13 +131,13 @@ fn convert(args: ConvertArgs) -> Result<()> {
             .ok_or_else(|| anyhow!("Failed to locate .debug section"))?;
         if let Some(out_path) = &args.out {
             let mut file = buf_writer(out_path)?;
-            convert_debug_section(&args, &mut file, &obj_file, debug_section)?;
+            convert_debug_section(&args, &mut file, &obj_file, buf, debug_section)?;
             file.flush()?;
         } else if args.no_color {
-            convert_debug_section(&args, &mut stdout(), &obj_file, debug_section)?;
+            convert_debug_section(&args, &mut stdout(), &obj_file, buf, debug_section)?;
         } else {
             let mut writer = HighlightWriter::new(syntax_set, syntax, theme);
-            convert_debug_section(&args, &mut writer, &obj_file, debug_section)?;
+            convert_debug_section(&args, &mut writer, &obj_file, buf, debug_section)?;
         }
     }
     Ok(())
@@ -146,6 +147,7 @@ fn convert_debug_section<W>(
     args: &ConvertArgs,
     w: &mut W,
     obj_file: &object::File<'_>,
+    raw_elf: &[u8],
     debug_section: Section,
 ) -> Result<()>
 where
@@ -356,68 +358,49 @@ where
             }
         }
     }
+    let mut builder = object::build::elf::Builder::read(&*raw_elf)?;
 
-    let mut write_elf = object::write::Object::new(
-        obj_file.format(),
-        obj_file.architecture(),
-        obj_file.endianness(),
-    );
-
-    // Copy all sections (handling BSS properly)
-    for section in obj_file.sections() {
-        if let Ok(name) = section.name() {
-            // skip DWARF 1 .debug section
-            if name == ".debug" {
-                continue;
-            }
-            let section_id =
-                write_elf.add_section(vec![], name.as_bytes().to_vec(), section.kind());
-
-            if section.kind() == object::SectionKind::UninitializedData {
-                // BSS section - just set size
-                write_elf.section_mut(section_id).append_bss(section.size(), section.align());
-            } else if let Ok(data) = section.data() {
-                // Regular section - copy data
-                write_elf.section_mut(section_id).set_data(data.to_vec(), section.align());
-            }
+    // Remove original debug sections
+    for section in builder.sections.iter_mut() {
+        if section.name.starts_with(b".debug") || section.name.starts_with(b".line") {
+            section.delete = true;
         }
     }
 
     let mut write_dwarf_sections =
         gimli::write::Sections::new(gimli::write::EndianVec::new(endian));
 
+    // TODO
     let line_str_offsets = gimli::write::DebugLineStrOffsets::none();
     let str_offsets = gimli::write::DebugStrOffsets::none();
 
     // Write units to sections
     write_units.write(&mut write_dwarf_sections, &line_str_offsets, &str_offsets)?;
 
-    write_dwarf_sections.for_each(|id, section| {
-        if section.len() == 0 {
+    write_dwarf_sections.for_each(|id, dwarf_section| {
+        if dwarf_section.len() == 0 {
             return Ok(());
         }
 
-        let section_id = write_elf.add_section(
-            vec![],
-            id.name().as_bytes().to_vec(),
-            object::SectionKind::Debug,
-        );
+        let write_section = builder.sections.add();
 
-        let write_section = write_elf.section_mut(section_id);
-        write_section.set_data(section.slice().to_vec(), 1);
+        write_section.name = id.name().as_bytes().to_vec().into();
+        write_section.sh_type = object::elf::SHT_PROGBITS; // or appropriate type for debug sections
+        write_section.data = object::build::elf::SectionData::Data(dwarf_section.slice().to_vec().into());
+        write_section.sh_addralign = 1;
 
         // Set flags for string sections
         if id.is_string() {
-            write_section.flags = object::SectionFlags::Elf {
-                sh_flags: (object::elf::SHF_STRINGS | object::elf::SHF_MERGE) as u64,
-            };
+            write_section.sh_flags = (object::elf::SHF_STRINGS | object::elf::SHF_MERGE).into();
         }
 
         Ok::<(), gimli::write::Error>(())
     })?;
 
-    let output_data = write_elf.write()?;
-    fs::write("output.elf", &output_data)?;
+    let file = File::create("output.elf")?;
+    let mut buffer = StreamingBuffer::new(file);
+
+    builder.write(&mut buffer)?;
 
     println!("ELF file with debug info written to output.elf");
     Ok(())
