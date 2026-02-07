@@ -1,3 +1,3 @@
 pub mod io;
-pub mod types;
 pub mod process;
+pub mod types;

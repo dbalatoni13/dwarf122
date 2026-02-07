@@ -49,6 +49,8 @@ impl VfsFile for StaticFile {
     fn into_disc_stream(self: Box<Self>) -> Box<dyn DiscStream> { self }
 }
 
+// TODO DWARF122 remove?
+#[allow(dead_code)]
 #[derive(Clone)]
 pub struct WindowedFile {
     base: Box<dyn VfsFile>,
@@ -58,6 +60,7 @@ pub struct WindowedFile {
 }
 
 impl WindowedFile {
+    #[allow(dead_code)]
     pub fn new(mut base: Box<dyn VfsFile>, offset: u64, size: u64) -> io::Result<Self> {
         base.seek(SeekFrom::Start(offset))?;
         Ok(Self { base, pos: offset, begin: offset, end: offset + size })

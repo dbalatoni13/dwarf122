@@ -5,13 +5,16 @@ use std::{
 
 use anyhow::{ensure, Context, Result};
 
-use crate::util::{dwarf::types::{Attribute, AttributeKind, AttributeValue, DwarfInfo, FORM_MASK, FormKind, Producer, Tag, TagKind}, reader::{Endian, FromReader}};
-
+use crate::util::{
+    dwarf::types::{
+        Attribute, AttributeKind, AttributeValue, DwarfInfo, FormKind, Producer, Tag, TagKind,
+        FORM_MASK,
+    },
+    reader::{Endian, FromReader},
+};
 
 pub fn read_debug_section<R>(reader: &mut R, e: Endian, include_erased: bool) -> Result<DwarfInfo>
-where
-    R: BufRead + Seek + ?Sized,
-{
+where R: BufRead + Seek + ?Sized {
     let len = {
         let old_pos = reader.stream_position()?;
         let len = reader.seek(SeekFrom::End(0))?;
@@ -43,9 +46,7 @@ pub fn parse_producer(producer: &str) -> Producer {
 
 #[allow(unused)]
 pub fn read_aranges_section<R>(reader: &mut R, e: Endian) -> Result<()>
-where
-    R: BufRead + Seek + ?Sized,
-{
+where R: BufRead + Seek + ?Sized {
     let len = {
         let old_pos = reader.stream_position()?;
         let len = reader.seek(SeekFrom::End(0))?;
@@ -185,9 +186,7 @@ where
 
 // TODO Shift-JIS?
 pub fn read_string<R>(reader: &mut R) -> Result<String>
-where
-    R: BufRead + ?Sized,
-{
+where R: BufRead + ?Sized {
     let mut str = String::new();
     let mut buf = [0u8; 1];
     loop {
@@ -200,7 +199,11 @@ where
     Ok(str)
 }
 
-pub fn read_attribute<R>(reader: &mut R, data_endian: Endian, addr_endian: Endian) -> Result<Attribute>
+pub fn read_attribute<R>(
+    reader: &mut R,
+    data_endian: Endian,
+    addr_endian: Endian,
+) -> Result<Attribute>
 where
     R: BufRead + Seek + ?Sized,
 {

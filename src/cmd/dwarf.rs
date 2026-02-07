@@ -50,7 +50,7 @@ enum SubCommand {
 
 #[derive(FromArgs, PartialEq, Eq, Debug)]
 /// Converts DWARF 1.1 info of an object into DWARF 2+.
-#[argp(subcommand, name = "dump")]
+#[argp(subcommand, name = "convert")]
 pub struct ConvertArgs {
     #[argp(positional, from_str_fn(native_path))]
     /// Input object. (ELF or archive)
@@ -112,15 +112,15 @@ fn convert(args: ConvertArgs) -> Result<()> {
                 let name = name.rsplit_once('/').map(|(_, b)| b).unwrap_or(&name);
                 let file_path = out_path.join(format!("{name}.txt"));
                 let mut file = buf_writer(&file_path)?;
-                dump_debug_section(&args, &mut file, &obj_file, debug_section)?;
+                convert_debug_section(&args, &mut file, &obj_file, debug_section)?;
                 file.flush()?;
             } else if args.no_color {
                 println!("\n// File {name}:");
-                dump_debug_section(&args, &mut stdout(), &obj_file, debug_section)?;
+                convert_debug_section(&args, &mut stdout(), &obj_file, debug_section)?;
             } else {
                 let mut writer = HighlightWriter::new(syntax_set.clone(), syntax.clone(), theme);
                 writeln!(writer, "\n// File {name}:")?;
-                dump_debug_section(&args, &mut writer, &obj_file, debug_section)?;
+                convert_debug_section(&args, &mut writer, &obj_file, debug_section)?;
             }
         }
     } else {
@@ -130,19 +130,19 @@ fn convert(args: ConvertArgs) -> Result<()> {
             .ok_or_else(|| anyhow!("Failed to locate .debug section"))?;
         if let Some(out_path) = &args.out {
             let mut file = buf_writer(out_path)?;
-            dump_debug_section(&args, &mut file, &obj_file, debug_section)?;
+            convert_debug_section(&args, &mut file, &obj_file, debug_section)?;
             file.flush()?;
         } else if args.no_color {
-            dump_debug_section(&args, &mut stdout(), &obj_file, debug_section)?;
+            convert_debug_section(&args, &mut stdout(), &obj_file, debug_section)?;
         } else {
             let mut writer = HighlightWriter::new(syntax_set, syntax, theme);
-            dump_debug_section(&args, &mut writer, &obj_file, debug_section)?;
+            convert_debug_section(&args, &mut writer, &obj_file, debug_section)?;
         }
     }
     Ok(())
 }
 
-fn dump_debug_section<W>(
+fn convert_debug_section<W>(
     args: &ConvertArgs,
     w: &mut W,
     obj_file: &object::File<'_>,
@@ -299,12 +299,8 @@ where
                     };
                     create_void_pointer(&mut write_dwarf.unit, &mut dwarf2_types);
                     for &child in &children {
-                        let tag_type = match process_cu_tag(
-                            &info,
-                            &mut write_dwarf.unit,
-                            &mut dwarf2_types,
-                            child,
-                        ) {
+                        match process_cu_tag(&info, &mut write_dwarf.unit, &mut dwarf2_types, child)
+                        {
                             Ok(tag_type) => tag_type,
                             Err(e) => {
                                 log::error!(

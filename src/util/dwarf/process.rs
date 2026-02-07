@@ -14,13 +14,10 @@ use crate::{
         dwarf::{
             io::{read_attribute, read_string},
             types::{
-                ArrayDimension, ArrayOrdering, ArrayType, Attribute, AttributeKind, AttributeValue,
-                BitData, CompileUnit, Dwarf2Types, DwarfInfo, EnumerationMember, EnumerationType,
-                FundType, Language, LocationOp, Modifier, OverlayBranch, Producer, PtrToMemberType,
-                StructureBase, StructureKind, StructureMember, StructureType, SubroutineBlock,
-                SubroutineLabel, SubroutineNode, SubroutineParameter, SubroutineType,
-                SubroutineVariable, SubscriptFormat, Tag, TagKind, TagType, Type, TypeKind,
-                TypedefTag, UnionType, UserDefinedType, VariableTag, Visibility,
+                ArrayDimension, ArrayOrdering, Attribute, AttributeKind, AttributeValue, BitData,
+                CompileUnit, Dwarf2Types, DwarfInfo, EnumerationMember, FundType, Language,
+                LocationOp, Modifier, OverlayBranch, Producer, StructureBase, StructureMember,
+                SubscriptFormat, Tag, TagKind, Type, TypeKind, Visibility,
             },
         },
         reader::{Endian, FromBytes, FromReader},
@@ -186,7 +183,7 @@ fn ref_fixup_inheritance_tag(
     for attr in &tag.attributes {
         match (attr.kind, &attr.value) {
             (AttributeKind::Sibling, _) => {}
-            (AttributeKind::Name, AttributeValue::String(s)) => {}
+            (AttributeKind::Name, AttributeValue::String(_s)) => {}
             (
                 AttributeKind::FundType
                 | AttributeKind::ModFundType
@@ -299,21 +296,19 @@ fn ref_fixup_structure_member_tag(
         .ok_or_else(|| anyhow!("Unknown member type"))?;
 
     for attr in &tag.attributes {
-        match (attr.kind, &attr.value) {
-            (
-                AttributeKind::FundType
-                | AttributeKind::ModFundType
-                | AttributeKind::UserDefType
-                | AttributeKind::ModUDType,
-                _,
-            ) => {
-                let member_type = process_type(unit, dwarf2_types, attr, info.e)?;
-                unit.get_mut(new_member_id).set(
-                    gimli::DW_AT_type,
-                    gimli::write::AttributeValue::UnitRef(member_type.entry_id),
-                );
-            }
-            _ => {}
+        if let (
+            AttributeKind::FundType
+            | AttributeKind::ModFundType
+            | AttributeKind::UserDefType
+            | AttributeKind::ModUDType,
+            _,
+        ) = (attr.kind, &attr.value)
+        {
+            let member_type = process_type(unit, dwarf2_types, attr, info.e)?;
+            unit.get_mut(new_member_id).set(
+                gimli::DW_AT_type,
+                gimli::write::AttributeValue::UnitRef(member_type.entry_id),
+            );
         }
     }
     Ok(())
@@ -587,11 +582,10 @@ fn process_array_subscript_data(
                 ensure!(low_bound == 0, "Invalid array low bound {low_bound}, expected 0");
                 let high_bound = u32::from_bytes(data[6..10].try_into()?, e);
                 data = &data[10..];
-                let index_type = dwarf2_types
+                let index_type = *dwarf2_types
                     .fundamental_map
                     .get(&index_type)
-                    .ok_or_else(|| anyhow!("Fundamental type missing"))?
-                    .clone();
+                    .ok_or_else(|| anyhow!("Fundamental type missing"))?;
                 dimensions.push(ArrayDimension {
                     index_type,
                     // u32::MAX will wrap to 0, meaning unbounded
@@ -607,11 +601,10 @@ fn process_array_subscript_data(
                 let (block, remain) = data[8..].split_at(size as usize);
                 let location = if block.is_empty() { 0 } else { process_offset(block, e)? };
                 data = remain;
-                let index_type = dwarf2_types
+                let index_type = *dwarf2_types
                     .fundamental_map
                     .get(&index_type)
-                    .ok_or_else(|| anyhow!("Fundamental type missing"))?
-                    .clone();
+                    .ok_or_else(|| anyhow!("Fundamental type missing"))?;
                 dimensions.push(ArrayDimension { index_type, size: NonZeroU32::new(location) });
             }
             SubscriptFormat::ElementType => {
@@ -853,26 +846,29 @@ fn process_subroutine_tag(
     let new_subroutine_id = unit.add(parent, subroutine_type);
     dwarf2_types.old_new_tag_map.insert(tag.key, new_subroutine_id);
 
+    // TODO DWARF122 append all these attributes
     let mut name = None;
-    let mut mangled_name = None;
-    let mut prototyped = false;
-    let mut var_args = false;
+    let mut _mangled_name = None;
+    let mut _prototyped = false;
+    let mut _var_args = false;
     let mut references = Vec::new();
     let mut member_of = None;
-    let mut inline = false;
+    let mut _inline = false;
     let mut start_address = None;
     let mut end_address = None;
     let mut virtual_ = false;
     // as opposed to a higher base class whose function is beging overridden
-    let mut this_pointer_found = false;
-    let mut direct_base_key = None;
-    let mut const_ = false;
-    let mut volatile_ = false;
+    let this_pointer_found = false;
+    let direct_base_key = None;
+    let _const_ = false;
+    let _volatile_ = false;
     for attr in &tag.attributes {
         match (attr.kind, &attr.value) {
             (AttributeKind::Sibling, _) => {}
             (AttributeKind::Name, AttributeValue::String(s)) => name = Some(s.clone()),
-            (AttributeKind::MwMangled, AttributeValue::String(s)) => mangled_name = Some(s.clone()),
+            (AttributeKind::MwMangled, AttributeValue::String(s)) => {
+                _mangled_name = Some(s.clone())
+            }
             (
                 AttributeKind::FundType
                 | AttributeKind::ModFundType
@@ -880,7 +876,7 @@ fn process_subroutine_tag(
                 | AttributeKind::ModUDType,
                 _,
             ) => {}
-            (AttributeKind::Prototyped, _) => prototyped = true,
+            (AttributeKind::Prototyped, _) => _prototyped = true,
             (AttributeKind::LowPc, &AttributeValue::Address(addr)) => {
                 start_address = Some(addr);
             }
@@ -932,7 +928,7 @@ fn process_subroutine_tag(
             ) => {
                 // Restore register
             }
-            (AttributeKind::Inline, _) => inline = true,
+            (AttributeKind::Inline, _) => _inline = true,
             (AttributeKind::Virtual, _) => virtual_ = true,
             (AttributeKind::Specification, &AttributeValue::Reference(_key)) => {}
             _ => {
@@ -952,7 +948,7 @@ fn process_subroutine_tag(
                     child,
                 )?;
             }
-            TagKind::UnspecifiedParameters => var_args = true,
+            TagKind::UnspecifiedParameters => _var_args = true,
             TagKind::LocalVariable => {
                 process_local_variable_tag(info, unit, new_subroutine_id, dwarf2_types, child)?;
             }
@@ -995,14 +991,14 @@ fn process_subroutine_tag(
     }
 
     let direct_member_of = direct_base_key;
-    let local = tag.kind == TagKind::Subroutine;
+    let _local = tag.kind == TagKind::Subroutine;
 
-    let mut static_member = false;
+    let mut _static_member = false;
     if let Producer::GCC = info.producer {
         // GCC doesn't retain namespaces, so this is a nice way to determine staticness
-        static_member = member_of.is_some() && !this_pointer_found;
+        _static_member = member_of.is_some() && !this_pointer_found;
     }
-    let override_ = virtual_ && member_of != direct_member_of;
+    let _override_ = virtual_ && member_of != direct_member_of;
 
     let new_subroutine_tag = unit.get_mut(new_subroutine_id);
     if let Some(ref name) = name {
@@ -1041,25 +1037,12 @@ fn ref_fixup_subroutine_tag(
         .cloned()
         .ok_or_else(|| anyhow!("Unknown subroutine"))?;
 
-    let mut name = None;
-    let mut mangled_name = None;
     let mut return_type = None;
-    let mut prototyped = false;
-    let mut var_args = false;
-    let mut references = Vec::new();
-    let mut member_of = None;
-    let mut inline = false;
-    let mut virtual_ = false;
-    // as opposed to a higher base class whose function is beging overridden
-    let mut this_pointer_found = false;
-    let mut direct_base_key = None;
-    let mut const_ = false;
-    let mut volatile_ = false;
     for attr in &tag.attributes {
         match (attr.kind, &attr.value) {
             (AttributeKind::Sibling, _) => {}
-            (AttributeKind::Name, AttributeValue::String(s)) => name = Some(s.clone()),
-            (AttributeKind::MwMangled, AttributeValue::String(s)) => mangled_name = Some(s.clone()),
+            (AttributeKind::Name, AttributeValue::String(_s)) => {}
+            (AttributeKind::MwMangled, AttributeValue::String(_s)) => {}
             (
                 AttributeKind::FundType
                 | AttributeKind::ModFundType
@@ -1069,12 +1052,10 @@ fn ref_fixup_subroutine_tag(
             ) => {
                 return_type = Some(process_type(unit, dwarf2_types, attr, info.e)?);
             }
-            (AttributeKind::Prototyped, _) => prototyped = true,
+            (AttributeKind::Prototyped, _) => {}
             (AttributeKind::LowPc, &AttributeValue::Address(_addr)) => {}
             (AttributeKind::HighPc, &AttributeValue::Address(_addr)) => {}
-            (AttributeKind::MwGlobalRef, &AttributeValue::Reference(key)) => {
-                references.push(key);
-            }
+            (AttributeKind::MwGlobalRef, &AttributeValue::Reference(_key)) => {}
             (AttributeKind::MwGlobalRefsBlock, AttributeValue::Block(_)) => {
                 // Global references block
             }
@@ -1082,9 +1063,7 @@ fn ref_fixup_subroutine_tag(
                 // let location = process_variable_location(block)?;
                 // info!("ReturnAddr: {}", location);
             }
-            (AttributeKind::Member, &AttributeValue::Reference(key)) => {
-                member_of = Some(key);
-            }
+            (AttributeKind::Member, &AttributeValue::Reference(_key)) => {}
             (AttributeKind::MwPrologueEnd, &AttributeValue::Address(_addr)) => {
                 // Prologue end
             }
@@ -1117,8 +1096,8 @@ fn ref_fixup_subroutine_tag(
             ) => {
                 // Restore register
             }
-            (AttributeKind::Inline, _) => inline = true,
-            (AttributeKind::Virtual, _) => virtual_ = true,
+            (AttributeKind::Inline, _) => {}
+            (AttributeKind::Virtual, _) => {}
             (AttributeKind::Specification, &AttributeValue::Reference(key)) => {
                 let spec_id = dwarf2_types
                     .old_new_tag_map
@@ -1141,7 +1120,7 @@ fn ref_fixup_subroutine_tag(
             TagKind::FormalParameter => {
                 ref_fixup_subroutine_parameter_tag(info, unit, dwarf2_types, child)?;
             }
-            TagKind::UnspecifiedParameters => var_args = true,
+            TagKind::UnspecifiedParameters => {}
             TagKind::LocalVariable => {
                 ref_fixup_local_variable_tag(info, unit, dwarf2_types, child)?;
             }
@@ -1178,16 +1157,6 @@ fn ref_fixup_subroutine_tag(
             kind => bail!("Unhandled SubroutineType child {:?}", kind),
         }
     }
-
-    let direct_member_of = direct_base_key;
-    let local = tag.kind == TagKind::Subroutine;
-
-    let mut static_member = false;
-    if let Producer::GCC = info.producer {
-        // GCC doesn't retain namespaces, so this is a nice way to determine staticness
-        static_member = member_of.is_some() && !this_pointer_found;
-    }
-    let override_ = virtual_ && member_of != direct_member_of;
 
     let new_subroutine_tag = unit.get_mut(new_subroutine_id);
     if let Some(ref return_type) = return_type {
@@ -1468,7 +1437,7 @@ fn ref_fixup_subroutine_parameter_tag(
             ) => {
                 kind = Some(process_type(unit, dwarf2_types, attr, info.e)?);
             }
-            (AttributeKind::Location, AttributeValue::Block(block)) => {}
+            (AttributeKind::Location, AttributeValue::Block(_block)) => {}
             (AttributeKind::MwDwarf2Location, AttributeValue::Block(_block)) => {
                 // TODO?
                 // info!("MwDwarf2Location: {:?} in {:?}", block, tag);
@@ -1516,14 +1485,16 @@ fn process_local_variable_tag(
     let new_local_var_id = unit.add(parent, gimli::DW_TAG_variable);
     dwarf2_types.old_new_tag_map.insert(tag.key, new_local_var_id);
 
-    let mut mangled_name = None;
+    let mut _mangled_name = None;
     let mut name = None;
     let mut location = None;
     for attr in &tag.attributes {
         match (attr.kind, &attr.value) {
             (AttributeKind::Sibling, _) => {}
             (AttributeKind::Name, AttributeValue::String(s)) => name = Some(s.clone()),
-            (AttributeKind::MwMangled, AttributeValue::String(s)) => mangled_name = Some(s.clone()),
+            (AttributeKind::MwMangled, AttributeValue::String(s)) => {
+                _mangled_name = Some(s.clone())
+            }
             (
                 AttributeKind::FundType
                 | AttributeKind::ModFundType
@@ -1579,15 +1550,12 @@ fn ref_fixup_local_variable_tag(
         .cloned()
         .ok_or_else(|| anyhow!("Unknown local variable"))?;
 
-    let mut mangled_name = None;
-    let mut name = None;
     let mut kind = None;
-    let mut location = None;
     for attr in &tag.attributes {
         match (attr.kind, &attr.value) {
             (AttributeKind::Sibling, _) => {}
-            (AttributeKind::Name, AttributeValue::String(s)) => name = Some(s.clone()),
-            (AttributeKind::MwMangled, AttributeValue::String(s)) => mangled_name = Some(s.clone()),
+            (AttributeKind::Name, AttributeValue::String(_s)) => {}
+            (AttributeKind::MwMangled, AttributeValue::String(_s)) => {}
             (
                 AttributeKind::FundType
                 | AttributeKind::ModFundType
@@ -1599,7 +1567,7 @@ fn ref_fixup_local_variable_tag(
             }
             (AttributeKind::Location, AttributeValue::Block(block)) => {
                 if !block.is_empty() {
-                    location = Some(process_variable_location(block, tag.data_endian)?);
+                    process_variable_location(block, tag.data_endian)?;
                 }
             }
             (AttributeKind::MwDwarf2Location, AttributeValue::Block(_block)) => {
@@ -1638,13 +1606,13 @@ fn ref_fixup_local_variable_tag(
 // TODO DWARF122
 fn process_ptr_to_member_tag(
     info: &DwarfInfo,
-    unit: &mut gimli::write::Unit,
-    dwarf2_types: &mut Dwarf2Types,
+    _unit: &mut gimli::write::Unit,
+    _dwarf2_types: &mut Dwarf2Types,
     tag: &Tag,
 ) -> Result<()> {
     ensure!(tag.kind == TagKind::PtrToMemberType, "{:?} is not a PtrToMemberType tag", tag.kind);
 
-    let mut kind = None;
+    let kind = None;
     let mut containing_type = None;
     for attr in &tag.attributes {
         match (attr.kind, &attr.value) {
@@ -1672,8 +1640,8 @@ fn process_ptr_to_member_tag(
         bail!("Unhandled PtrToMemberType child {:?}", child.kind);
     }
 
-    let kind = kind.ok_or_else(|| anyhow!("PtrToMemberType without type: {:?}", tag))?;
-    let containing_type = containing_type
+    kind.ok_or_else(|| anyhow!("PtrToMemberType without type: {:?}", tag))?;
+    let _containing_type = containing_type
         .ok_or_else(|| anyhow!("PtrToMemberType without containing type: {:?}", tag))?;
     Ok(())
 }
@@ -1772,7 +1740,7 @@ fn create_or_get_modified_type(
     unit: &mut gimli::write::Unit,
     dwarf2_types: &mut Dwarf2Types,
     base_id: UnitEntryId,
-    modifiers: &Vec<Modifier>,
+    modifiers: &[Modifier],
 ) -> Result<UnitEntryId> {
     let mut modified_type_id = base_id;
     if modifiers.is_empty() {
@@ -1796,7 +1764,7 @@ fn create_or_get_modified_type(
                         let entry_id = unit.add(unit.root(), gimli::DW_TAG_pointer_type);
                         // TODO unhardcode size?
                         unit.get_mut(entry_id)
-                            .set(gimli::DW_AT_byte_size, unsigned_dwarf_value(4 as u8));
+                            .set(gimli::DW_AT_byte_size, unsigned_dwarf_value(4_u8));
                         unit.get_mut(entry_id).set(
                             gimli::DW_AT_type,
                             gimli::write::AttributeValue::UnitRef(modified_type_id),
@@ -1807,7 +1775,7 @@ fn create_or_get_modified_type(
                     Modifier::ReferenceTo => {
                         let entry_id = unit.add(unit.root(), gimli::DW_TAG_reference_type);
                         unit.get_mut(entry_id)
-                            .set(gimli::DW_AT_byte_size, unsigned_dwarf_value(4 as u8));
+                            .set(gimli::DW_AT_byte_size, unsigned_dwarf_value(4_u8));
                         unit.get_mut(entry_id).set(
                             gimli::DW_AT_type,
                             gimli::write::AttributeValue::UnitRef(modified_type_id),
@@ -1836,7 +1804,7 @@ fn create_or_get_modified_type(
                 }
             }
             hash_map::Entry::Occupied(v) => {
-                modified_type_id = v.get().clone();
+                modified_type_id = *v.get();
             }
         }
     }
@@ -2040,11 +2008,10 @@ fn ref_fixup_typedef_tag(
         .cloned()
         .ok_or_else(|| anyhow!("Unknown typedef"))?;
 
-    let mut name = None;
     let mut kind = None;
     for attr in &tag.attributes {
         match (attr.kind, &attr.value) {
-            (AttributeKind::Name, AttributeValue::String(s)) => name = Some(s.clone()),
+            (AttributeKind::Name, AttributeValue::String(_s)) => {}
             (
                 AttributeKind::FundType
                 | AttributeKind::ModFundType
@@ -2097,13 +2064,15 @@ fn process_variable_tag(
     ensure!(is_variable, "{:?} is not a variable tag", tag.kind);
 
     let mut name = None;
-    let mut mangled_name = None;
+    let mut _mangled_name = None;
     let mut address = None;
     for attr in &tag.attributes {
         match (attr.kind, &attr.value) {
             (AttributeKind::Sibling, _) => {}
             (AttributeKind::Name, AttributeValue::String(s)) => name = Some(s.clone()),
-            (AttributeKind::MwMangled, AttributeValue::String(s)) => mangled_name = Some(s.clone()),
+            (AttributeKind::MwMangled, AttributeValue::String(s)) => {
+                _mangled_name = Some(s.clone())
+            }
             (
                 AttributeKind::FundType
                 | AttributeKind::ModFundType
@@ -2129,7 +2098,7 @@ fn process_variable_tag(
     }
 
     // let kind = kind.ok_or_else(|| anyhow!("Variable without Type: {:?}", tag))?;
-    let local = tag.kind == TagKind::LocalVariable;
+    let _local = tag.kind == TagKind::LocalVariable;
 
     let global_id = unit.add(parent, gimli::DW_TAG_variable);
     dwarf2_types.old_new_tag_map.insert(tag.key, global_id);
@@ -2252,7 +2221,7 @@ pub fn create_void_pointer(unit: &mut gimli::write::Unit, dwarf2_types: &mut Dwa
     let void_pointer_id = unit.add(unit.root(), gimli::DW_TAG_pointer_type);
     // TODO unhardcode size?
     // void* doesn't point to anything in DWARF 2+
-    unit.get_mut(void_pointer_id).set(gimli::DW_AT_byte_size, unsigned_dwarf_value(4 as u8));
+    unit.get_mut(void_pointer_id).set(gimli::DW_AT_byte_size, unsigned_dwarf_value(4_u8));
 
     dwarf2_types.modified_type_id_map.insert((void_id, vec![Modifier::PointerTo]), void_pointer_id);
 }
@@ -2283,12 +2252,4 @@ fn unsigned_dwarf_value<T: Into<u64>>(value: T) -> gimli::write::AttributeValue 
     } else {
         gimli::write::AttributeValue::Udata(v)
     }
-}
-
-fn signed_dwarf_value<T>(value: T) -> Result<gimli::write::AttributeValue>
-where
-    T: TryInto<u64>,
-{
-    let v: u64 = value.try_into().map_err(|_| anyhow!("Negative value"))?;
-    return Ok(unsigned_dwarf_value(v));
 }

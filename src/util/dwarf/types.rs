@@ -1,17 +1,13 @@
 use std::{
-    collections::{hash_map, BTreeMap, HashMap},
-    io::{BufRead, Cursor, Seek, SeekFrom},
+    collections::{BTreeMap, HashMap},
     num::NonZeroU32,
 };
 
-use anyhow::{anyhow, bail, ensure, Context, Result};
+use anyhow::{bail, Result};
 use gimli::write::{Expression, UnitEntryId};
 use num_enum::{IntoPrimitive, TryFromPrimitive, TryFromPrimitiveError};
 
-use crate::{
-    array_ref,
-    util::reader::{Endian, FromBytes, FromReader},
-};
+use crate::util::reader::Endian;
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone, IntoPrimitive, TryFromPrimitive)]
 #[repr(u16)]
@@ -791,37 +787,6 @@ impl UserDefinedType {
             UserDefinedType::Subroutine(t) => t.name.is_some(),
         }
     }
-
-    pub fn size(&self) -> Result<u32> {
-        Ok(match self {
-            UserDefinedType::Array(t) => {
-                let mut size = t.element_type.size()?;
-                for dim in &t.dimensions {
-                    size *= dim.size.map(|u| u.get()).unwrap_or_default();
-                }
-                size
-            }
-            UserDefinedType::Structure(t) => match t.byte_size {
-                Some(byte_size) => byte_size,
-                None => {
-                    let mut max_end = 0;
-                    // TODO dwarf122?
-                    // for member in &t.members {
-                    //     let size = match member.byte_size {
-                    //         Some(byte_size) => byte_size,
-                    //         None => member.kind.size(info)?,
-                    //     };
-                    //     max_end = max(max_end, member.offset + size);
-                    // }
-                    max_end
-                }
-            },
-            UserDefinedType::Enumeration(t) => t.byte_size,
-            UserDefinedType::Union(t) => t.byte_size,
-            UserDefinedType::Subroutine(_) => 0,
-            UserDefinedType::PtrToMember(_) => 4,
-        })
-    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -835,18 +800,4 @@ pub struct Type {
     pub kind: TypeKind,
     pub modifiers: Vec<Modifier>,
     pub entry_id: UnitEntryId,
-}
-
-impl Type {
-    pub fn size(&self) -> Result<u32> {
-        if self.modifiers.iter().any(|m| {
-            matches!(m, Modifier::MwPointerTo | Modifier::PointerTo | Modifier::ReferenceTo)
-        }) {
-            return Ok(4);
-        }
-        match self.kind {
-            TypeKind::Fundamental(ft) => ft.size(),
-            TypeKind::UserDefined(key) => Ok(4), // TODO remove this
-        }
-    }
 }
