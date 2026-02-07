@@ -160,7 +160,7 @@ impl FundType {
             FundType::Long => gimli::DW_ATE_signed,
             FundType::SignedLong => gimli::DW_ATE_signed,
             FundType::UnsignedLong => gimli::DW_ATE_unsigned,
-            FundType::Pointer => bail!("Unhandled fundamental type {self:?}"),
+            FundType::Pointer => gimli::DW_ATE_address,
             FundType::Float => gimli::DW_ATE_float,
             FundType::DblPrecFloat => gimli::DW_ATE_float,
             FundType::ExtPrecFloat => gimli::DW_ATE_float,

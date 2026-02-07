@@ -2174,7 +2174,7 @@ fn ref_fixup_variable_tag(
     Ok(())
 }
 
-const FUNDAMENTALS: [FundType; 19] = [
+const FUNDAMENTALS: [FundType; 20] = [
     FundType::Char,
     FundType::SignedChar,
     FundType::UnsignedChar,
@@ -2194,6 +2194,7 @@ const FUNDAMENTALS: [FundType; 19] = [
     FundType::Float,
     FundType::DblPrecFloat,
     FundType::Void,
+    FundType::Pointer,
 ];
 
 pub fn build_fundemantal_typemap(

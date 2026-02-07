@@ -5,6 +5,6 @@
 
 A utility that converts DWARF 1 debug info to DWARF2.
 
-Credits:
+## Credits:
 
 encounter's decomp-toolkit for providing the DWARF 1 parser and utils
