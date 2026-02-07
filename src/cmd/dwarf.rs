@@ -221,14 +221,6 @@ where
                 }
                 TagKind::CompileUnit => {
                     let read_unit = process_compile_unit(tag)?;
-                    // if !read_unit.name.ends_with("zPhysicsBehaviors.cpp") {
-                    //     if let Some(next) = tag.next_sibling(&info.tags) {
-                    //         tag = next;
-                    //     } else {
-                    //         break;
-                    //     }
-                    //     continue;
-                    // }
 
                     let mut write_dwarf = gimli::write::DwarfUnit::new(encoding);
                     // TODO DWARF122 move to dwarf2_types?
@@ -316,16 +308,12 @@ where
                             Ok(tag_type) => tag_type,
                             Err(e) => {
                                 log::error!(
-                                    "Failed to process tag {:X} (unit {}): {}",
+                                    "Failed to process tag {:X} ({:?}) (unit {}): {}",
                                     child.key,
+                                    child.kind,
                                     read_unit.name,
                                     e
                                 );
-                                writeln!(
-                                    w,
-                                    "// ERROR: Failed to process tag {:X} ({:?})",
-                                    child.key, child.kind
-                                )?;
                                 continue;
                             }
                         };
@@ -350,16 +338,12 @@ where
                             ref_fixup_cu_tag(&info, &mut write_dwarf.unit, &mut dwarf2_types, child)
                         {
                             log::error!(
-                                "Failed to process tag {:X} (unit {}): {}",
+                                "Failed to fixup tag {:X} ({:?}) (unit {}): {}",
                                 child.key,
+                                child.kind,
                                 read_unit.name,
                                 e
                             );
-                            writeln!(
-                                w,
-                                "// ERROR: Failed to process tag {:X} ({:?})",
-                                child.key, child.kind
-                            )?;
                             continue;
                         }
                     }

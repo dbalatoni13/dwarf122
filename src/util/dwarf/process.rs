@@ -941,7 +941,6 @@ fn process_subroutine_tag(
         }
     }
 
-    let mut labels = Vec::new();
     for child in tag.children(&info.tags) {
         match child.kind {
             TagKind::FormalParameter => {
@@ -960,7 +959,9 @@ fn process_subroutine_tag(
             TagKind::GlobalVariable => {
                 process_variable_tag(info, unit, new_subroutine_id, dwarf2_types, child)?
             }
-            TagKind::Label => labels.push(process_subroutine_label_tag(info, child)?),
+            TagKind::Label => {
+                process_subroutine_label_tag(info, unit, new_subroutine_id, dwarf2_types, child)?;
+            }
             TagKind::LexicalBlock => {
                 process_subroutine_block_tag(info, unit, new_subroutine_id, dwarf2_types, child)?;
             }
@@ -1147,10 +1148,7 @@ fn ref_fixup_subroutine_tag(
             TagKind::GlobalVariable => {
                 ref_fixup_variable_tag(info, unit, dwarf2_types, child)?;
             }
-            TagKind::Label => {
-                // TODO DWARF122 is this needed?
-                // ref_fixup_subroutine_label_tag(info, child)?;
-            }
+            TagKind::Label => {}
             TagKind::LexicalBlock => {
                 ref_fixup_subroutine_block_tag(info, unit, dwarf2_types, child)?;
             }
@@ -1200,8 +1198,17 @@ fn ref_fixup_subroutine_tag(
     Ok(())
 }
 
-fn process_subroutine_label_tag(info: &DwarfInfo, tag: &Tag) -> Result<SubroutineLabel> {
+fn process_subroutine_label_tag(
+    info: &DwarfInfo,
+    unit: &mut gimli::write::Unit,
+    parent: gimli::write::UnitEntryId,
+    dwarf2_types: &mut Dwarf2Types,
+    tag: &Tag,
+) -> Result<()> {
     ensure!(tag.kind == TagKind::Label, "{:?} is not a Label tag", tag.kind);
+
+    let new_label_id = unit.add(parent, gimli::DW_TAG_lexical_block);
+    dwarf2_types.old_new_tag_map.insert(tag.key, new_label_id);
 
     let mut name = None;
     let mut address = None;
@@ -1210,6 +1217,17 @@ fn process_subroutine_label_tag(info: &DwarfInfo, tag: &Tag) -> Result<Subroutin
             (AttributeKind::Sibling, _) => {}
             (AttributeKind::Name, AttributeValue::String(s)) => name = Some(s.clone()),
             (AttributeKind::LowPc, &AttributeValue::Address(addr)) => address = Some(addr),
+            (AttributeKind::Specification, &AttributeValue::Reference(key)) => {
+                let spec_id = dwarf2_types
+                    .old_new_tag_map
+                    .get(&key)
+                    .cloned()
+                    .ok_or_else(|| anyhow!("Unknown spec"))?;
+                unit.get_mut(new_label_id).set(
+                    gimli::DW_AT_specification,
+                    gimli::write::AttributeValue::UnitRef(spec_id),
+                );
+            }
             _ => bail!("Unhandled Label attribute {:?}", attr),
         }
     }
@@ -1218,9 +1236,20 @@ fn process_subroutine_label_tag(info: &DwarfInfo, tag: &Tag) -> Result<Subroutin
         bail!("Unhandled Label child {:?}", child.kind);
     }
 
-    let name = name.ok_or_else(|| anyhow!("Label without name: {:?}", tag))?;
-    let address = address.ok_or_else(|| anyhow!("Label without address: {:?}", tag))?;
-    Ok(SubroutineLabel { name, address })
+    let new_label_tag = unit.get_mut(new_label_id);
+
+    if let Some(ref name) = name {
+        new_label_tag
+            .set(gimli::DW_AT_name, gimli::write::AttributeValue::String(name.as_bytes().to_vec()));
+    }
+    if let Some(address) = address {
+        new_label_tag.set(
+            gimli::DW_AT_low_pc,
+            gimli::write::AttributeValue::Address(gimli::write::Address::Constant(address as u64)),
+        );
+    }
+
+    Ok(())
 }
 
 fn process_subroutine_block_tag(
