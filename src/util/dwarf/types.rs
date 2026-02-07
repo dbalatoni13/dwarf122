@@ -156,7 +156,7 @@ impl FundType {
             FundType::UnsignedShort => gimli::DW_ATE_unsigned,
             FundType::Integer => gimli::DW_ATE_signed,
             FundType::SignedInteger => gimli::DW_ATE_signed,
-            FundType::UnsignedInteger => gimli::DW_ATE_signed,
+            FundType::UnsignedInteger => gimli::DW_ATE_unsigned,
             FundType::Long => gimli::DW_ATE_signed,
             FundType::SignedLong => gimli::DW_ATE_signed,
             FundType::UnsignedLong => gimli::DW_ATE_unsigned,
