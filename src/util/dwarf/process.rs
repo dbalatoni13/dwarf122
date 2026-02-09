@@ -931,6 +931,15 @@ fn process_subroutine_tag(
             (AttributeKind::Inline, _) => _inline = true,
             (AttributeKind::Virtual, _) => virtual_ = true,
             (AttributeKind::Specification, &AttributeValue::Reference(_key)) => {}
+            (AttributeKind::Private, _) => {
+                // TODO
+            }
+            (AttributeKind::Protected, _) => {
+                // TODO
+            }
+            (AttributeKind::Public, _) => {
+                // TODO
+            }
             _ => {
                 bail!("Unhandled SubroutineType attribute {:?}", attr);
             }
@@ -1109,6 +1118,9 @@ fn ref_fixup_subroutine_tag(
                     gimli::write::AttributeValue::UnitRef(spec_id),
                 );
             }
+            (AttributeKind::Private, _) => {}
+            (AttributeKind::Protected, _) => {}
+            (AttributeKind::Public, _) => {}
             _ => {
                 bail!("Unhandled SubroutineType attribute {:?}", attr);
             }
