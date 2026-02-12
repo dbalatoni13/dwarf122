@@ -13,7 +13,7 @@ use crate::{
     array_ref,
     util::{
         dwarf::{
-            io::{read_attribute, read_string, read_va},
+            io::{read_attribute, read_string},
             types::{
                 ArrayDimension, ArrayOrdering, Attribute, AttributeKind, AttributeValue, BitData,
                 CompileUnit, Dwarf2Types, DwarfInfo, EnumerationMember, FundType, Language,
@@ -960,7 +960,6 @@ fn process_subroutine_tag(
         }
     }
 
-    let mut stack_offset_expr = None;
     if let Some(start_address) = start_address {
         unit.get_mut(new_subroutine_id).set(
             gimli::DW_AT_low_pc,
@@ -968,14 +967,6 @@ fn process_subroutine_tag(
                 start_address as u64,
             )),
         );
-
-        if info.ppc_hacks
-            && let Some(obj_file) = info.obj_file
-            && let Ok(maybe_stack_setup_ins_bytes) = read_va(obj_file, start_address as u64, 4)
-        {
-            // TODO DWARF122 maybe it must be just r1? wait for how Ghidra implements it properly later
-            stack_offset_expr = maybe_process_stack_offset(maybe_stack_setup_ins_bytes, info.e);
-        }
     }
 
     if let Some(end_address) = end_address {
@@ -986,14 +977,20 @@ fn process_subroutine_tag(
             )),
         );
 
-        if let Some(start_address) = start_address
+        if info.ppc_hacks
+            && let Some(start_address) = start_address
             && start_address != end_address
-            && let Some(stack_offset_expr) = stack_offset_expr
         {
-            let loclist = create_loc_list(start_address, end_address, stack_offset_expr);
-            let loc = unit.locations.add(loclist);
-            unit.get_mut(new_subroutine_id)
-                .set(gimli::DW_AT_frame_base, gimli::write::AttributeValue::LocationListRef(loc));
+            let mut stack_offset_expr = gimli::write::Expression::new();
+            stack_offset_expr.op_reg(gimli::Register(1));
+
+            let loclist =
+                create_loc_list(start_address as u64, end_address as u64, stack_offset_expr);
+            let loc_id = unit.locations.add(loclist);
+            unit.get_mut(new_subroutine_id).set(
+                gimli::DW_AT_frame_base,
+                gimli::write::AttributeValue::LocationListRef(loc_id),
+            );
         }
     }
 
@@ -1448,9 +1445,14 @@ fn process_subroutine_parameter_tag(
             gimli::write::AttributeValue::String(name.clone().into_bytes()),
         );
     }
-    if let Some(location) = location {
+    if let Some(location) = location
+        && let Some((start_address, end_address)) = get_start_end_adress_of_parent(unit, parent)
+    {
+        let loclist = create_loc_list(start_address, end_address, location);
+        let loc_id = unit.locations.add(loclist);
+
         unit.get_mut(new_parameter_id)
-            .set(gimli::DW_AT_location, gimli::write::AttributeValue::Exprloc(location));
+            .set(gimli::DW_AT_location, gimli::write::AttributeValue::LocationListRef(loc_id));
     }
 
     Ok(())
@@ -1574,9 +1576,14 @@ fn process_local_variable_tag(
             gimli::write::AttributeValue::String(name.clone().into_bytes()),
         );
     }
-    if let Some(location) = location {
+    if let Some(location) = location
+        && let Some((start_address, end_address)) = get_start_end_adress_of_parent(unit, parent)
+    {
+        let loclist = create_loc_list(start_address, end_address, location);
+        let loc_id = unit.locations.add(loclist);
+
         unit.get_mut(new_local_var_id)
-            .set(gimli::DW_AT_location, gimli::write::AttributeValue::Exprloc(location));
+            .set(gimli::DW_AT_location, gimli::write::AttributeValue::LocationListRef(loc_id));
     }
 
     Ok(())
@@ -2301,13 +2308,27 @@ fn unsigned_dwarf_value<T: Into<u64>>(value: T) -> gimli::write::AttributeValue 
     }
 }
 
-fn create_loc_list(start_address: u32, end_address: u32, expr: Expression) -> LocationList {
+fn create_loc_list(start_address: u64, end_address: u64, expr: Expression) -> LocationList {
     let base_address =
         gimli::write::Location::BaseAddress { address: gimli::write::Address::Constant(0) };
-    let location = gimli::write::Location::OffsetPair {
-        begin: start_address as u64,
-        end: end_address as u64,
-        data: expr,
-    };
+    let location =
+        gimli::write::Location::OffsetPair { begin: start_address, end: end_address, data: expr };
     LocationList(vec![base_address, location])
+}
+
+fn get_start_end_adress_of_parent(
+    unit: &gimli::write::Unit,
+    parent: UnitEntryId,
+) -> Option<(u64, u64)> {
+    if let Some(gimli::write::AttributeValue::Address(gimli::write::Address::Constant(
+        start_address,
+    ))) = unit.get(parent).get(gimli::DW_AT_low_pc)
+        && let Some(gimli::write::AttributeValue::Address(gimli::write::Address::Constant(
+            end_address,
+        ))) = unit.get(parent).get(gimli::DW_AT_high_pc)
+    {
+        let end_address_to_use = if *start_address == *end_address {*end_address + 4} else {*end_address};
+        return Some((*start_address, end_address_to_use));
+    }
+    return None;
 }
