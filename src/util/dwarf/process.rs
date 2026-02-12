@@ -1,18 +1,19 @@
 use std::{
-    collections::{hash_map, BTreeMap},
+    collections::{BTreeMap, hash_map},
     io::Cursor,
     num::NonZeroU32,
 };
 
-use anyhow::{anyhow, bail, ensure, Context, Result};
-use gimli::write::{Expression, UnitEntryId};
+use anyhow::{Context, Result, anyhow, bail, ensure};
+use gimli::write::{Expression, LocationList, UnitEntryId};
 use num_enum::TryFromPrimitive;
+use ppc750cl::Argument;
 
 use crate::{
     array_ref,
     util::{
         dwarf::{
-            io::{read_attribute, read_string},
+            io::{read_attribute, read_string, read_va},
             types::{
                 ArrayDimension, ArrayOrdering, Attribute, AttributeKind, AttributeValue, BitData,
                 CompileUnit, Dwarf2Types, DwarfInfo, EnumerationMember, FundType, Language,
@@ -59,11 +60,21 @@ pub const REGISTER_NAMES: [&str; 109] = [
 ];
 
 pub const fn register_name(reg: u32) -> &'static str {
-    if reg < REGISTER_NAMES.len() as u32 {
-        REGISTER_NAMES[reg as usize]
-    } else {
-        "[invalid]"
+    if reg < REGISTER_NAMES.len() as u32 { REGISTER_NAMES[reg as usize] } else { "[invalid]" }
+}
+
+pub fn maybe_process_stack_offset(block: &[u8], e: Endian) -> Option<Expression> {
+    let mut expr = gimli::write::Expression::new();
+    let instr_bytes = u32::from_bytes(*array_ref!(block, 0, 4), e);
+    // Tries to parse an stwu r1, -0xXX(r1) instruction
+    let ins = ppc750cl::Ins::new(instr_bytes).basic();
+    if ins.mnemonic == "stwu"
+        && let Argument::Offset(offset) = ins.args[1]
+    {
+        expr.op_breg(gimli::Register(1), offset.0 as i64);
+        return Some(expr);
     }
+    None
 }
 
 pub fn process_variable_location(block: &[u8], e: Endian) -> Result<Expression> {
@@ -525,7 +536,10 @@ fn ref_fixup_array_tag(
                 AttributeValue::Data2(d2) => {
                     let order = ArrayOrdering::try_from_primitive(*d2)?;
                     if order == ArrayOrdering::ColMajor {
-                        log::warn!("Column Major Ordering in Tag {}, Cannot guarantee array will be correct if original source is in different programming language.", tag.key);
+                        log::warn!(
+                            "Column Major Ordering in Tag {}, Cannot guarantee array will be correct if original source is in different programming language.",
+                            tag.key
+                        );
                     }
                 }
                 _ => bail!("Unhandled ArrayType attribute {:?}", attr),
@@ -946,6 +960,43 @@ fn process_subroutine_tag(
         }
     }
 
+    let mut stack_offset_expr = None;
+    if let Some(start_address) = start_address {
+        unit.get_mut(new_subroutine_id).set(
+            gimli::DW_AT_low_pc,
+            gimli::write::AttributeValue::Address(gimli::write::Address::Constant(
+                start_address as u64,
+            )),
+        );
+
+        if info.ppc_hacks
+            && let Some(obj_file) = info.obj_file
+            && let Ok(maybe_stack_setup_ins_bytes) = read_va(obj_file, start_address as u64, 4)
+        {
+            // TODO DWARF122 maybe it must be just r1? wait for how Ghidra implements it properly later
+            stack_offset_expr = maybe_process_stack_offset(maybe_stack_setup_ins_bytes, info.e);
+        }
+    }
+
+    if let Some(end_address) = end_address {
+        unit.get_mut(new_subroutine_id).set(
+            gimli::DW_AT_high_pc,
+            gimli::write::AttributeValue::Address(gimli::write::Address::Constant(
+                end_address as u64,
+            )),
+        );
+
+        if let Some(start_address) = start_address
+            && start_address != end_address
+            && let Some(stack_offset_expr) = stack_offset_expr
+        {
+            let loclist = create_loc_list(start_address, end_address, stack_offset_expr);
+            let loc = unit.locations.add(loclist);
+            unit.get_mut(new_subroutine_id)
+                .set(gimli::DW_AT_frame_base, gimli::write::AttributeValue::LocationListRef(loc));
+        }
+    }
+
     for child in tag.children(&info.tags) {
         match child.kind {
             TagKind::FormalParameter => {
@@ -1009,26 +1060,9 @@ fn process_subroutine_tag(
     }
     let _override_ = virtual_ && member_of != direct_member_of;
 
-    let new_subroutine_tag = unit.get_mut(new_subroutine_id);
     if let Some(ref name) = name {
-        new_subroutine_tag
+        unit.get_mut(new_subroutine_id)
             .set(gimli::DW_AT_name, gimli::write::AttributeValue::String(name.as_bytes().to_vec()));
-    }
-    if let Some(start_address) = start_address {
-        new_subroutine_tag.set(
-            gimli::DW_AT_low_pc,
-            gimli::write::AttributeValue::Address(gimli::write::Address::Constant(
-                start_address as u64,
-            )),
-        );
-    }
-    if let Some(end_address) = end_address {
-        new_subroutine_tag.set(
-            gimli::DW_AT_high_pc,
-            gimli::write::AttributeValue::Address(gimli::write::Address::Constant(
-                end_address as u64,
-            )),
-        );
     }
 
     Ok(())
@@ -2265,4 +2299,15 @@ fn unsigned_dwarf_value<T: Into<u64>>(value: T) -> gimli::write::AttributeValue 
     } else {
         gimli::write::AttributeValue::Udata(v)
     }
+}
+
+fn create_loc_list(start_address: u32, end_address: u32, expr: Expression) -> LocationList {
+    let base_address =
+        gimli::write::Location::BaseAddress { address: gimli::write::Address::Constant(0) };
+    let location = gimli::write::Location::OffsetPair {
+        begin: start_address as u64,
+        end: end_address as u64,
+        data: expr,
+    };
+    LocationList(vec![base_address, location])
 }

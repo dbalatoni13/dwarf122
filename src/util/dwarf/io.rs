@@ -3,7 +3,8 @@ use std::{
     io::{BufRead, Cursor, Seek, SeekFrom},
 };
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
+use object::{Object, ObjectSegment};
 
 use crate::util::{
     dwarf::types::{
@@ -13,7 +14,7 @@ use crate::util::{
     reader::{Endian, FromReader},
 };
 
-pub fn read_debug_section<R>(reader: &mut R, e: Endian, include_erased: bool) -> Result<DwarfInfo>
+pub fn read_debug_section<R>(reader: &mut R, e: Endian, include_erased: bool) -> Result<DwarfInfo<'_>>
 where R: BufRead + Seek + ?Sized {
     let len = {
         let old_pos = reader.stream_position()?;
@@ -22,7 +23,7 @@ where R: BufRead + Seek + ?Sized {
         len
     };
 
-    let mut info = DwarfInfo { e, tags: BTreeMap::new(), producer: Producer::OTHER };
+    let mut info = DwarfInfo { e, tags: BTreeMap::new(), producer: Producer::OTHER, ppc_hacks: false, obj_file: None };
     loop {
         let position = reader.stream_position()?;
         if position >= len {
@@ -231,4 +232,18 @@ where
         FormKind::String => AttributeValue::String(read_string(reader)?),
     };
     Ok(Attribute { kind: attr, value })
+}
+
+pub fn read_va<'a>(file: &'a object::File<'a>, addr: u64, size: u64) -> Result<&'a [u8]> {
+    for seg in file.segments() {
+        let seg_start = seg.address();
+        let seg_end = seg_start + seg.size();
+
+        if addr >= seg_start && addr + size <= seg_end {
+            let data = seg.data()?;
+            let delta = (addr - seg_start) as usize;
+            return Ok(&data[delta..delta + size as usize]);
+        }
+    }
+    bail!("address not in any segment");
 }

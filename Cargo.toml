@@ -4,12 +4,12 @@ description = "DWARF 1 to DWARF 2 converter."
 authors = ["David Balatoni"]
 license = "MIT OR Apache-2.0"
 version = "0.0.1"
-edition = "2021"
+edition = "2024"
 publish = false
 repository = "https://github.com/dbalatoni13/dwarf122"
 readme = "README.md"
 categories = ["command-line-utilities"]
-rust-version = "1.81"
+rust-version = "1.85"
 
 [[bin]]
 name = "dwarf122"
@@ -48,7 +48,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zerocopy = { version = "0.8", features = ["derive"] }
-gimli = "0.32.3"
+gimli = "0.33.0"
+ppc750cl = "0.3.3"
 
 [target.'cfg(target_env = "musl")'.dependencies]
 mimalloc = "0.1"

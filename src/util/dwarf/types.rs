@@ -3,7 +3,7 @@ use std::{
     num::NonZeroU32,
 };
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use gimli::write::{Expression, UnitEntryId};
 use num_enum::{IntoPrimitive, TryFromPrimitive, TryFromPrimitiveError};
 
@@ -512,10 +512,12 @@ pub struct Dwarf2Types {
 pub type TypedefMap = BTreeMap<u32, Vec<u32>>;
 
 #[derive(Debug)]
-pub struct DwarfInfo {
+pub struct DwarfInfo<'a> {
     pub e: Endian,
     pub tags: TagMap,
     pub producer: Producer,
+    pub ppc_hacks: bool,
+    pub obj_file: Option<&'a object::File<'a>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

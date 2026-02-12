@@ -1,17 +1,17 @@
 use std::{
-    collections::{btree_map, BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, btree_map},
     fs::File,
-    io::{stdout, Cursor, Read, Write},
+    io::{Cursor, Read, Write, stdout},
     ops::Bound::{Excluded, Unbounded},
     str::from_utf8,
 };
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use argp::FromArgs;
 use gimli::write::Writer;
 use object::{
-    elf, write::StreamingBuffer, Object, ObjectSection, ObjectSymbol, RelocationFlags,
-    RelocationTarget, Section,
+    Object, ObjectSection, ObjectSymbol, RelocationFlags, RelocationTarget, Section, elf,
+    write::StreamingBuffer,
 };
 use syntect::{
     highlighting::{Color, HighlightIterator, HighlightState, Highlighter, Theme, ThemeSet},
@@ -62,6 +62,9 @@ pub struct ConvertArgs {
     #[argp(switch)]
     /// Disable color output.
     no_color: bool,
+    #[argp(switch)]
+    /// Add PowerPC specific hacks which import better into Ghidra.
+    ppc_hacks: bool,
     #[argp(switch)]
     /// Attempt to reconstruct tags that have been removed by the linker, e.g.
     /// tags from unused functions or functions that have been inlined away.
@@ -176,11 +179,13 @@ where
     let mut reader = Cursor::new(&*data);
     let encoding = gimli::Encoding {
         format: if obj_file.is_64() { gimli::Format::Dwarf64 } else { gimli::Format::Dwarf32 },
-        version: 4,
+        version: 2,
         address_size: if obj_file.is_64() { 8 } else { 4 }, // TODO "weird" platforms?
     };
     let mut info =
         read_debug_section(&mut reader, obj_file.endianness().into(), args.include_erased)?;
+    info.ppc_hacks = args.ppc_hacks;
+    info.obj_file = Some(obj_file);
 
     for (&addr, tag) in &info.tags {
         log::debug!("{}: {:?}", addr, tag);
@@ -223,6 +228,14 @@ where
                 }
                 TagKind::CompileUnit => {
                     let read_unit = process_compile_unit(tag)?;
+                    if !read_unit.name.ends_with("zAI.cpp") {
+                        if let Some(next) = tag.next_sibling(&info.tags) {
+                            tag = next;
+                        } else {
+                            break;
+                        }
+                        continue;
+                    }
 
                     let mut write_dwarf = gimli::write::DwarfUnit::new(encoding);
                     // TODO DWARF122 move to dwarf2_types?
@@ -371,11 +384,11 @@ where
         gimli::write::Sections::new(gimli::write::EndianVec::new(endian));
 
     // TODO
-    let line_str_offsets = gimli::write::DebugLineStrOffsets::none();
-    let str_offsets = gimli::write::DebugStrOffsets::none();
+    let mut line_str_offsets = gimli::write::LineStringTable::default();
+    let mut str_offsets = gimli::write::StringTable::default();
 
     // Write units to sections
-    write_units.write(&mut write_dwarf_sections, &line_str_offsets, &str_offsets)?;
+    write_units.write(&mut write_dwarf_sections, &mut line_str_offsets, &mut str_offsets)?;
 
     write_dwarf_sections.for_each(|id, dwarf_section| {
         if dwarf_section.len() == 0 {
@@ -386,7 +399,8 @@ where
 
         write_section.name = id.name().as_bytes().to_vec().into();
         write_section.sh_type = object::elf::SHT_PROGBITS; // or appropriate type for debug sections
-        write_section.data = object::build::elf::SectionData::Data(dwarf_section.slice().to_vec().into());
+        write_section.data =
+            object::build::elf::SectionData::Data(dwarf_section.slice().to_vec().into());
         write_section.sh_addralign = 1;
 
         // Set flags for string sections

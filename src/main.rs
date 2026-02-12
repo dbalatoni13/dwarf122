@@ -105,7 +105,9 @@ fn main() {
         // Try to enable ANSI support on Windows.
         let _ = enable_ansi_support();
         // Disable isatty check for supports-color. (e.g. when used with ninja)
-        env::set_var("IGNORE_IS_TERMINAL", "1");
+        unsafe {
+            env::set_var("IGNORE_IS_TERMINAL", "1");
+        }
         supports_color::on(Stream::Stdout).is_some_and(|c| c.has_basic)
     };
     // owo-colors uses an old version of supports-color, so we need to override manually.
