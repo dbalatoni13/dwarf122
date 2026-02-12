@@ -228,14 +228,14 @@ where
                 }
                 TagKind::CompileUnit => {
                     let read_unit = process_compile_unit(tag)?;
-                    if !read_unit.name.ends_with("zAI.cpp") {
-                        if let Some(next) = tag.next_sibling(&info.tags) {
-                            tag = next;
-                        } else {
-                            break;
-                        }
-                        continue;
-                    }
+                    // if !read_unit.name.ends_with("zAI.cpp") {
+                    //     if let Some(next) = tag.next_sibling(&info.tags) {
+                    //         tag = next;
+                    //     } else {
+                    //         break;
+                    //     }
+                    //     continue;
+                    // }
 
                     let mut write_dwarf = gimli::write::DwarfUnit::new(encoding);
                     // TODO DWARF122 move to dwarf2_types?

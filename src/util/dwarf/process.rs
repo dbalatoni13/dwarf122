@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, hash_map},
+    fmt::Write,
     io::Cursor,
     num::NonZeroU32,
 };
@@ -861,7 +862,6 @@ fn process_subroutine_tag(
     dwarf2_types.old_new_tag_map.insert(tag.key, new_subroutine_id);
 
     // TODO DWARF122 append all these attributes
-    let mut name = None;
     let mut _mangled_name = None;
     let mut _prototyped = false;
     let mut _var_args = false;
@@ -879,7 +879,7 @@ fn process_subroutine_tag(
     for attr in &tag.attributes {
         match (attr.kind, &attr.value) {
             (AttributeKind::Sibling, _) => {}
-            (AttributeKind::Name, AttributeValue::String(s)) => name = Some(s.clone()),
+            (AttributeKind::Name, AttributeValue::String(_s)) => {}
             (AttributeKind::MwMangled, AttributeValue::String(s)) => {
                 _mangled_name = Some(s.clone())
             }
@@ -1057,11 +1057,6 @@ fn process_subroutine_tag(
     }
     let _override_ = virtual_ && member_of != direct_member_of;
 
-    if let Some(ref name) = name {
-        unit.get_mut(new_subroutine_id)
-            .set(gimli::DW_AT_name, gimli::write::AttributeValue::String(name.as_bytes().to_vec()));
-    }
-
     Ok(())
 }
 
@@ -1077,11 +1072,15 @@ fn ref_fixup_subroutine_tag(
         .cloned()
         .ok_or_else(|| anyhow!("Unknown subroutine"))?;
 
+    let mut name = None;
+    let mut member_of = None;
     let mut return_type = None;
+    let mut virtual_ = false;
+    let mut direct_base_key = None;
     for attr in &tag.attributes {
         match (attr.kind, &attr.value) {
             (AttributeKind::Sibling, _) => {}
-            (AttributeKind::Name, AttributeValue::String(_s)) => {}
+            (AttributeKind::Name, AttributeValue::String(s)) => name = Some(s.clone()),
             (AttributeKind::MwMangled, AttributeValue::String(_s)) => {}
             (
                 AttributeKind::FundType
@@ -1103,7 +1102,9 @@ fn ref_fixup_subroutine_tag(
                 // let location = process_variable_location(block)?;
                 // info!("ReturnAddr: {}", location);
             }
-            (AttributeKind::Member, &AttributeValue::Reference(_key)) => {}
+            (AttributeKind::Member, &AttributeValue::Reference(key)) => {
+                member_of = Some(key);
+            }
             (AttributeKind::MwPrologueEnd, &AttributeValue::Address(_addr)) => {
                 // Prologue end
             }
@@ -1137,7 +1138,7 @@ fn ref_fixup_subroutine_tag(
                 // Restore register
             }
             (AttributeKind::Inline, _) => {}
-            (AttributeKind::Virtual, _) => {}
+            (AttributeKind::Virtual, _) => virtual_ = true,
             (AttributeKind::Specification, &AttributeValue::Reference(key)) => {
                 let spec_id = dwarf2_types
                     .old_new_tag_map
@@ -1158,10 +1159,23 @@ fn ref_fixup_subroutine_tag(
         }
     }
 
+    let mut this_pointer_found = false;
     for child in tag.children(&info.tags) {
         match child.kind {
             TagKind::FormalParameter => {
-                ref_fixup_subroutine_parameter_tag(info, unit, dwarf2_types, child)?;
+                // TODO this is wrong for inlines because they often have the name inside a specification tag
+                let param_name = child.string_attribute(AttributeKind::Name);
+
+                if let Some(param_name) = param_name && !this_pointer_found && param_name == "this" {
+                    let kind = ref_fixup_subroutine_parameter_tag(info, unit, dwarf2_types, child)?;
+                    // This is needed because direct_base differs from member_of in virtual function overrides
+                    if let Some(kind) = kind
+                        && let TypeKind::UserDefined(key) = kind.kind
+                    {
+                        direct_base_key = Some(key);
+                    }
+                    this_pointer_found = true;
+                }
             }
             TagKind::UnspecifiedParameters => {}
             TagKind::LocalVariable => {
@@ -1206,6 +1220,99 @@ fn ref_fixup_subroutine_tag(
         new_subroutine_tag
             .set(gimli::DW_AT_type, gimli::write::AttributeValue::UnitRef(return_type.entry_id));
     }
+
+    let direct_member_of = direct_base_key;
+    let override_ = virtual_ && member_of != direct_member_of;
+
+    // name logic
+    let mut base_name_opt = None;
+    let mut direct_base_name_opt = None;
+
+    if let Some(member_of) = member_of {
+        let tag = info
+            .tags
+            .get(&member_of)
+            .ok_or_else(|| anyhow!("Failed to locate member_of tag {}", member_of))?;
+        let base_name = tag
+            .string_attribute(AttributeKind::Name)
+            .ok_or_else(|| anyhow!("member_of tag {} has no name attribute", member_of))?;
+
+        base_name_opt = Some(base_name);
+    }
+
+    if let Some(direct_member_of) = direct_member_of {
+        let tag = info
+            .tags
+            .get(&direct_member_of)
+            .ok_or_else(|| anyhow!("Failed to locate direct_member_of tag {}", direct_member_of))?;
+        let direct_base_name = tag.string_attribute(AttributeKind::Name).ok_or_else(|| {
+            anyhow!("direct_member_of tag {} has no name attribute", direct_member_of)
+        })?;
+
+        direct_base_name_opt = Some(direct_base_name);
+        if base_name_opt.is_none() {
+            // Fall back to the parsed out direct_base_name on PS2 MW because it doesn't emit a base class
+            base_name_opt = direct_base_name_opt;
+        }
+    }
+
+    let return_type = return_type.unwrap_or_else(|| Type {
+        kind: TypeKind::Fundamental(FundType::Void),
+        modifiers: vec![],
+        entry_id: dwarf2_types.fundamental_map.get(&FundType::Void).unwrap().clone(),
+    });
+
+    let mut name_written = false;
+
+    let mut full_written_name = String::new();
+
+    if override_ {
+        if let Producer::GCC = info.producer {
+            if let Some(direct_base_name) = direct_base_name_opt {
+                // we need to emit the real parent on GCC
+                write!(full_written_name, "{direct_base_name}::")?;
+
+                if let Some(name) = name.as_ref() {
+                    // in GCC the ctor and dtor are called the same, so we need to check the return value
+                    // this is only for the dtor, the ctor can be left as is
+                    if name == direct_base_name {
+                        if let TypeKind::Fundamental(FundType::Void) = return_type.kind {
+                            write!(full_written_name, "~{direct_base_name}")?;
+                            name_written = true;
+                        }
+                    }
+                }
+            }
+        }
+    } else if let Some(base_name) = base_name_opt {
+        write!(full_written_name, "{base_name}::")?;
+
+        // Handle constructors and destructors
+        if let Some(name) = name.as_ref() {
+            if name == "__dt" {
+                write!(full_written_name, "~{base_name}")?;
+                name_written = true;
+            } else if name == "__ct" {
+                write!(full_written_name, "{base_name}")?;
+                name_written = true;
+            } else if name == base_name {
+                if let TypeKind::Fundamental(FundType::Void) = return_type.kind {
+                    write!(full_written_name, "~{base_name}")?;
+                    name_written = true;
+                }
+            }
+        }
+    }
+    if !name_written {
+        if let Some(name) = name.as_ref() {
+            full_written_name.push_str(name);
+        }
+    }
+
+    new_subroutine_tag.set(
+        gimli::DW_AT_name,
+        gimli::write::AttributeValue::String(full_written_name.as_bytes().to_vec()),
+    );
 
     Ok(())
 }
@@ -1463,7 +1570,7 @@ fn ref_fixup_subroutine_parameter_tag(
     unit: &mut gimli::write::Unit,
     dwarf2_types: &mut Dwarf2Types,
     tag: &Tag,
-) -> Result<()> {
+) -> Result<Option<Type>> {
     ensure!(tag.kind == TagKind::FormalParameter, "{:?} is not a FormalParameter tag", tag.kind);
 
     let new_parameter_id = dwarf2_types
@@ -1513,12 +1620,12 @@ fn ref_fixup_subroutine_parameter_tag(
         bail!("Unhandled SubroutineParameter child {:?}", child.kind);
     }
 
-    if let Some(kind) = kind {
+    if let Some(ref kind) = kind {
         unit.get_mut(new_parameter_id)
             .set(gimli::DW_AT_type, gimli::write::AttributeValue::UnitRef(kind.entry_id));
     }
 
-    Ok(())
+    Ok(kind)
 }
 
 fn process_local_variable_tag(
@@ -2327,7 +2434,8 @@ fn get_start_end_adress_of_parent(
             end_address,
         ))) = unit.get(parent).get(gimli::DW_AT_high_pc)
     {
-        let end_address_to_use = if *start_address == *end_address {*end_address + 4} else {*end_address};
+        let end_address_to_use =
+            if *start_address == *end_address { *end_address + 4 } else { *end_address };
         return Some((*start_address, end_address_to_use));
     }
     return None;
