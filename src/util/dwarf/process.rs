@@ -1271,7 +1271,7 @@ fn ref_fixup_subroutine_tag(
     let return_type = return_type.unwrap_or_else(|| Type {
         kind: TypeKind::Fundamental(FundType::Void),
         modifiers: vec![],
-        entry_id: dwarf2_types.fundamental_map.get(&FundType::Void).unwrap().clone(),
+        entry_id: *dwarf2_types.fundamental_map.get(&FundType::Void).unwrap(),
     });
 
     let mut name_written = false;
@@ -2459,5 +2459,5 @@ fn get_start_end_adress_of_parent(
             if *start_address == *end_address { *end_address + 4 } else { *end_address };
         return Some((*start_address, end_address_to_use));
     }
-    return None;
+    None
 }

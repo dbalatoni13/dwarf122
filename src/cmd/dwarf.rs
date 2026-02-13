@@ -353,7 +353,7 @@ where
             }
         }
     }
-    let mut builder = object::build::elf::Builder::read(&*raw_elf)?;
+    let mut builder = object::build::elf::Builder::read(raw_elf)?;
 
     // Remove original debug sections
     for section in builder.sections.iter_mut() {
