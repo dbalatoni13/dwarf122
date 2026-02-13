@@ -970,22 +970,31 @@ fn process_subroutine_tag(
     }
 
     if let Some(end_address) = end_address {
+        let end_address_to_write = if let Some(start_address) = start_address
+            && start_address == end_address
+        {
+            end_address + 4
+        } else {
+            end_address
+        };
         unit.get_mut(new_subroutine_id).set(
             gimli::DW_AT_high_pc,
             gimli::write::AttributeValue::Address(gimli::write::Address::Constant(
-                end_address as u64,
+                end_address_to_write as u64,
             )),
         );
 
         if info.ppc_hacks
             && let Some(start_address) = start_address
-            && start_address != end_address
         {
             let mut stack_offset_expr = gimli::write::Expression::new();
             stack_offset_expr.op_reg(gimli::Register(1));
 
-            let loclist =
-                create_loc_list(start_address as u64, end_address as u64, stack_offset_expr);
+            let loclist = create_loc_list(
+                start_address as u64,
+                end_address_to_write as u64,
+                stack_offset_expr,
+            );
             let loc_id = unit.locations.add(loclist);
             unit.get_mut(new_subroutine_id).set(
                 gimli::DW_AT_frame_base,
@@ -1166,8 +1175,11 @@ fn ref_fixup_subroutine_tag(
                 // TODO this is wrong for inlines because they often have the name inside a specification tag
                 let param_name = child.string_attribute(AttributeKind::Name);
 
-                if let Some(param_name) = param_name && !this_pointer_found && param_name == "this" {
-                    let kind = ref_fixup_subroutine_parameter_tag(info, unit, dwarf2_types, child)?;
+                let kind = ref_fixup_subroutine_parameter_tag(info, unit, dwarf2_types, child)?;
+                if let Some(param_name) = param_name
+                    && !this_pointer_found
+                    && param_name == "this"
+                {
                     // This is needed because direct_base differs from member_of in virtual function overrides
                     if let Some(kind) = kind
                         && let TypeKind::UserDefined(key) = kind.kind
@@ -1309,10 +1321,12 @@ fn ref_fixup_subroutine_tag(
         }
     }
 
-    new_subroutine_tag.set(
-        gimli::DW_AT_name,
-        gimli::write::AttributeValue::String(full_written_name.as_bytes().to_vec()),
-    );
+    if !full_written_name.is_empty() {
+        new_subroutine_tag.set(
+            gimli::DW_AT_name,
+            gimli::write::AttributeValue::String(full_written_name.as_bytes().to_vec()),
+        );
+    }
 
     Ok(())
 }
@@ -1446,10 +1460,17 @@ fn process_subroutine_block_tag(
         );
     }
     if let Some(end_address) = end_address {
+        let end_address_to_write = if let Some(start_address) = start_address
+            && start_address == end_address
+        {
+            end_address + 4
+        } else {
+            end_address
+        };
         new_block_tag.set(
             gimli::DW_AT_high_pc,
             gimli::write::AttributeValue::Address(gimli::write::Address::Constant(
-                end_address as u64,
+                end_address_to_write as u64,
             )),
         );
     }
