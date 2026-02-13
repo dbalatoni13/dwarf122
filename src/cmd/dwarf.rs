@@ -17,7 +17,7 @@ use syntect::{
     highlighting::{Color, HighlightIterator, HighlightState, Highlighter, Theme, ThemeSet},
     parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet},
 };
-use typed_path::{Utf8NativePathBuf};
+use typed_path::Utf8NativePathBuf;
 
 use crate::{
     util::{
@@ -64,6 +64,9 @@ pub struct ConvertArgs {
     #[argp(switch)]
     /// Add PowerPC specific hacks which import better into Ghidra.
     ppc_hacks: bool,
+    #[argp(option, default = "4")]
+    /// Specify the dwarf version. 4 by default.
+    dwarf_version: u16,
     #[argp(switch)]
     /// Attempt to reconstruct tags that have been removed by the linker, e.g.
     /// tags from unused functions or functions that have been inlined away.
@@ -167,7 +170,7 @@ where
     let mut reader = Cursor::new(&*data);
     let encoding = gimli::Encoding {
         format: if obj_file.is_64() { gimli::Format::Dwarf64 } else { gimli::Format::Dwarf32 },
-        version: 2,
+        version: args.dwarf_version,
         address_size: if obj_file.is_64() { 8 } else { 4 }, // TODO "weird" platforms?
     };
     let mut info =
