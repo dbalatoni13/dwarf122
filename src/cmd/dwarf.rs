@@ -3,19 +3,14 @@ use std::{
     fs::File,
     io::{Cursor, Read, Write, stdout},
     ops::Bound::{Excluded, Unbounded},
-    str::from_utf8,
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use argp::FromArgs;
 use gimli::write::Writer;
 use object::{
     Object, ObjectSection, ObjectSymbol, RelocationFlags, RelocationTarget, Section, elf,
     write::StreamingBuffer,
-};
-use syntect::{
-    highlighting::{Color, HighlightIterator, HighlightState, Highlighter, Theme, ThemeSet},
-    parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet},
 };
 use typed_path::Utf8NativePathBuf;
 
@@ -59,9 +54,6 @@ pub struct ConvertArgs {
     /// Output file. (Or directory, for archive)
     out: Option<Utf8NativePathBuf>,
     #[argp(switch)]
-    /// Disable color output.
-    no_color: bool,
-    #[argp(switch)]
     /// Add PowerPC specific hacks which import better into Ghidra.
     ppc_hacks: bool,
     #[argp(option, default = "4")]
@@ -80,15 +72,6 @@ pub fn run(args: Args) -> Result<()> {
 }
 
 fn convert(args: ConvertArgs) -> Result<()> {
-    // Load syntect
-    let theme_set: ThemeSet =
-        syntect::dumps::from_binary(include_bytes!("../../assets/syntax/default.themedump"));
-    let syntax_set: SyntaxSet = syntect::dumps::from_binary(include_bytes!(
-        "../../assets/syntax/default_newlines.packdump"
-    ));
-    let theme = theme_set.themes.get("Solarized (dark)").context("Failed to load theme")?;
-    let syntax = syntax_set.find_syntax_by_name("C++").context("Failed to find syntax")?.clone();
-
     let mut file = open_file(&args.in_file)?;
     let buf = file.map()?;
     if buf.starts_with(b"!<arch>\n") {
@@ -113,26 +96,15 @@ fn convert(args: ConvertArgs) -> Result<()> {
                     continue;
                 }
             };
-            if args.no_color {
-                println!("\n// File {name}:");
-                convert_debug_section(&args, &mut stdout(), &obj_file, &data, debug_section)?;
-            } else {
-                let mut writer = HighlightWriter::new(syntax_set.clone(), syntax.clone(), theme);
-                writeln!(writer, "\n// File {name}:")?;
-                convert_debug_section(&args, &mut writer, &obj_file, &data, debug_section)?;
-            }
+            println!("\n// File {name}:");
+            convert_debug_section(&args, &mut stdout(), &obj_file, &data, debug_section)?;
         }
     } else {
         let obj_file = object::read::File::parse(buf)?;
         let debug_section = obj_file
             .section_by_name(".debug")
             .ok_or_else(|| anyhow!("Failed to locate .debug section"))?;
-        if args.no_color {
-            convert_debug_section(&args, &mut stdout(), &obj_file, buf, debug_section)?;
-        } else {
-            let mut writer = HighlightWriter::new(syntax_set, syntax, theme);
-            convert_debug_section(&args, &mut writer, &obj_file, buf, debug_section)?;
-        }
+        convert_debug_section(&args, &mut stdout(), &obj_file, buf, debug_section)?;
     }
     Ok(())
 }
@@ -402,82 +374,4 @@ where
 
     println!("ELF file with debug info written to {}", &output_path);
     Ok(())
-}
-
-struct HighlightWriter<'a> {
-    line: String,
-    highlighter: Highlighter<'a>,
-    parse_state: ParseState,
-    highlight_state: HighlightState,
-    syntax_set: SyntaxSet,
-}
-
-impl<'a> HighlightWriter<'a> {
-    pub fn new(
-        syntax_set: SyntaxSet,
-        syntax: SyntaxReference,
-        theme: &'a Theme,
-    ) -> HighlightWriter<'a> {
-        let highlighter = Highlighter::new(theme);
-        let highlight_state = HighlightState::new(&highlighter, ScopeStack::new());
-        HighlightWriter {
-            line: String::new(),
-            highlighter,
-            syntax_set,
-            parse_state: ParseState::new(&syntax),
-            highlight_state,
-        }
-    }
-}
-
-#[inline]
-fn blend_fg_color(fg: Color, bg: Color) -> Color {
-    if fg.a == 0xff {
-        return fg;
-    }
-    let ratio = fg.a as u32;
-    let r = (fg.r as u32 * ratio + bg.r as u32 * (255 - ratio)) / 255;
-    let g = (fg.g as u32 * ratio + bg.g as u32 * (255 - ratio)) / 255;
-    let b = (fg.b as u32 * ratio + bg.b as u32 * (255 - ratio)) / 255;
-    Color { r: r as u8, g: g as u8, b: b as u8, a: 255 }
-}
-
-impl Write for HighlightWriter<'_> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let str = from_utf8(buf).map_err(std::io::Error::other)?;
-        for s in str.split_inclusive('\n') {
-            self.line.push_str(s);
-            if self.line.ends_with('\n') {
-                self.flush()?;
-            }
-        }
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        if self.line.is_empty() {
-            return Ok(());
-        }
-        let ops = self
-            .parse_state
-            .parse_line(&self.line, &self.syntax_set)
-            .map_err(std::io::Error::other)?;
-        let iter = HighlightIterator::new(
-            &mut self.highlight_state,
-            &ops[..],
-            &self.line,
-            &self.highlighter,
-        );
-        for (style, text) in iter {
-            print!(
-                "\x1b[48;2;{};{};{}m",
-                style.background.r, style.background.g, style.background.b
-            );
-            let fg = blend_fg_color(style.foreground, style.background);
-            print!("\x1b[38;2;{};{};{}m{}", fg.r, fg.g, fg.b, text);
-        }
-        print!("\x1b[0m");
-        self.line.clear();
-        Ok(())
-    }
 }
