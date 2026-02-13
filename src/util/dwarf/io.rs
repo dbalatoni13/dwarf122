@@ -8,14 +8,20 @@ use object::{Object, ObjectSegment};
 
 use crate::util::{
     dwarf::types::{
-        Attribute, AttributeKind, AttributeValue, DwarfInfo, FormKind, Producer, Tag, TagKind,
-        FORM_MASK,
+        Attribute, AttributeKind, AttributeValue, DwarfInfo, FORM_MASK, FormKind, Producer, Tag,
+        TagKind,
     },
     reader::{Endian, FromReader},
 };
 
-pub fn read_debug_section<R>(reader: &mut R, e: Endian, include_erased: bool) -> Result<DwarfInfo<'_>>
-where R: BufRead + Seek + ?Sized {
+pub fn read_debug_section<R>(
+    reader: &mut R,
+    e: Endian,
+    include_erased: bool,
+) -> Result<DwarfInfo<'_>>
+where
+    R: BufRead + Seek + ?Sized,
+{
     let len = {
         let old_pos = reader.stream_position()?;
         let len = reader.seek(SeekFrom::End(0))?;
@@ -23,7 +29,13 @@ where R: BufRead + Seek + ?Sized {
         len
     };
 
-    let mut info = DwarfInfo { e, tags: BTreeMap::new(), producer: Producer::OTHER, ppc_hacks: false, obj_file: None };
+    let mut info = DwarfInfo {
+        e,
+        tags: BTreeMap::new(),
+        producer: Producer::OTHER,
+        ppc_hacks: false,
+        obj_file: None,
+    };
     loop {
         let position = reader.stream_position()?;
         if position >= len {

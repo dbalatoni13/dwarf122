@@ -10,9 +10,9 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use common::StaticFile;
-use disc::{nod_to_io_error, DiscFs};
+use disc::{DiscFs, nod_to_io_error};
 use dyn_clone::DynClone;
 use filetime::FileTime;
 use nodtool::{nod, nod::DiscStream};
@@ -190,7 +190,7 @@ pub fn open_path_with_fs(
                         Err(anyhow!("{} is not a file", current_path))
                     } else {
                         Ok(OpenResult::Directory)
-                    }
+                    };
                 }
             }
         }
