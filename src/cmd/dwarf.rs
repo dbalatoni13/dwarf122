@@ -17,7 +17,7 @@ use syntect::{
     highlighting::{Color, HighlightIterator, HighlightState, Highlighter, Theme, ThemeSet},
     parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet},
 };
-use typed_path::Utf8NativePathBuf;
+use typed_path::{Utf8NativePathBuf};
 
 use crate::{
     util::{
@@ -29,7 +29,6 @@ use crate::{
             },
             types::{AttributeKind, Dwarf2Types, TagKind, TypedefMap},
         },
-        file::buf_writer,
         path::native_path,
     },
     vfs::open_file,
@@ -90,6 +89,7 @@ fn convert(args: ConvertArgs) -> Result<()> {
     let mut file = open_file(&args.in_file)?;
     let buf = file.map()?;
     if buf.starts_with(b"!<arch>\n") {
+        // TODO DWARF122 archive stuff
         let mut archive = ar::Archive::new(buf);
         while let Some(result) = archive.next_entry() {
             let mut e = match result {
@@ -110,15 +110,7 @@ fn convert(args: ConvertArgs) -> Result<()> {
                     continue;
                 }
             };
-            if let Some(out_path) = &args.out {
-                // TODO make a basename method
-                let name = name.trim_start_matches("D:").replace('\\', "/");
-                let name = name.rsplit_once('/').map(|(_, b)| b).unwrap_or(&name);
-                let file_path = out_path.join(format!("{name}.txt"));
-                let mut file = buf_writer(&file_path)?;
-                convert_debug_section(&args, &mut file, &obj_file, &data, debug_section)?;
-                file.flush()?;
-            } else if args.no_color {
+            if args.no_color {
                 println!("\n// File {name}:");
                 convert_debug_section(&args, &mut stdout(), &obj_file, &data, debug_section)?;
             } else {
@@ -132,11 +124,7 @@ fn convert(args: ConvertArgs) -> Result<()> {
         let debug_section = obj_file
             .section_by_name(".debug")
             .ok_or_else(|| anyhow!("Failed to locate .debug section"))?;
-        if let Some(out_path) = &args.out {
-            let mut file = buf_writer(out_path)?;
-            convert_debug_section(&args, &mut file, &obj_file, buf, debug_section)?;
-            file.flush()?;
-        } else if args.no_color {
+        if args.no_color {
             convert_debug_section(&args, &mut stdout(), &obj_file, buf, debug_section)?;
         } else {
             let mut writer = HighlightWriter::new(syntax_set, syntax, theme);
@@ -402,12 +390,14 @@ where
         Ok::<(), gimli::write::Error>(())
     })?;
 
-    let file = File::create("output.elf")?;
+    let output_path =
+        if let Some(out) = &args.out { out.clone() } else { Utf8NativePathBuf::from("out.elf") };
+    let file = File::create(&output_path)?;
     let mut buffer = StreamingBuffer::new(file);
 
     builder.write(&mut buffer)?;
 
-    println!("ELF file with debug info written to output.elf");
+    println!("ELF file with debug info written to {}", &output_path);
     Ok(())
 }
 
